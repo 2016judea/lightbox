@@ -107,6 +107,44 @@ final class Scanner {
         process = nil
     }
 
+    var lbScan: URL { prefix.appendingPathComponent("bin/lb-scan") }
+    var canCaptureIR: Bool { FileManager.default.isExecutableFile(atPath: lbScan.path) }
+
+    /// One pass that keeps the infrared plane beside the colour scan (lb-scan, Color+Infrared),
+    /// so dust removal can be switched on and off afterwards.
+    func scanWithIR(device: String, dpi: Int, exposure: Double, rgb: URL, ir: URL,
+                    progress: @escaping (Double) -> Void) async throws {
+        let p = Process()
+        p.executableURL = lbScan
+        p.arguments = [device, "\(dpi)", String(format: "%.2f", exposure), rgb.path, ir.path]
+        var env = ProcessInfo.processInfo.environment
+        env["SANE_CONFIG_DIR"] = configDir.path
+        p.environment = env
+        let err = Pipe(); p.standardError = err; p.standardOutput = Pipe()
+        let tail = TailBuffer()
+        err.fileHandleForReading.readabilityHandler = { h in
+            let s = String(decoding: h.availableData, as: UTF8.self)
+            tail.append(s)
+            if let m = s.range(of: "Progress: ([0-9.]+)%", options: [.regularExpression, .backwards]),
+               let v = Double(s[m].dropFirst(10).dropLast()) { DispatchQueue.main.async { progress(v / 100) } }
+        }
+        process = p
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            p.terminationHandler = { proc in
+                err.fileHandleForReading.readabilityHandler = nil
+                if proc.terminationStatus == 0 { cont.resume() }
+                else if proc.terminationReason == .uncaughtSignal { cont.resume(throwing: CancellationError()) }
+                else {
+                    let last = tail.value.replacingOccurrences(of: "\r", with: "\n").split(separator: "\n")
+                        .filter { !$0.hasPrefix("Progress") }.last.map(String.init) ?? "unknown error"
+                    cont.resume(throwing: ScanError(message: "The scanner stopped: \(last)"))
+                }
+            }
+            do { try p.run() } catch { cont.resume(throwing: error) }
+        }
+        process = nil
+    }
+
     func cancel() { process?.terminate() }
 }
 

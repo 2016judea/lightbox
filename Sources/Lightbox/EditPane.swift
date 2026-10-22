@@ -9,7 +9,7 @@ struct EditPane: View {
             VStack(alignment: .leading, spacing: 22) {
                 TipCard(ids: ["preview", "scan", "next", "lab"])
 
-                Section("Film", tips: ["film", "stock"]) {
+                Section("Film", tips: ["film", "stock", "reset"]) {
                     FilmChips()
                     if let why = store.look.explain {
                         Label(why, systemImage: "info.circle")
@@ -18,10 +18,12 @@ struct EditPane: View {
                     }
                 }
 
-                Section("Light", tips: ["exposure", "contrast"]) {
+                Section("Light", tips: ["exposure", "contrast", "sharpen"]) {
                     AdjustSlider(id: "exposure", label: "Exposure", symbol: "sun.max", value: $store.edit.exposure)
                     AdjustSlider(id: "contrast", label: "Contrast", symbol: "circle.righthalf.filled", value: $store.edit.contrast)
-                    AdjustSlider(id: "sharpen", label: "Sharpness", symbol: "triangle", value: $store.edit.sharpen)
+                    AdjustSlider(id: "sharpen", label: "Sharpness", symbol: "triangle", value: $store.edit.sharpen,
+                                 onEditing: { on in if on { store.updateLoupe() } },
+                                 onHover: { on in if on { store.updateLoupe() } else { store.hideLoupe() } })
                 }
 
                 Section("Colour", tips: ["warmth", "tint"]) {
@@ -37,6 +39,7 @@ struct EditPane: View {
                         IconButton(symbol: "rotate.right", help: "Rotate right") { store.rotate(1) }
                         IconButton(symbol: "arrow.left.and.right.righttriangle.left.righttriangle.right", help: "Mirror") { store.toggleMirror() }
                         Spacer()
+                        ResetButton(setting: .cropRotate)
                         Button(store.cropping ? "Cropping…" : "Crop") { store.startCrop() }
                             .buttonStyle(QuietButton()).disabled(store.cropping)
                     }
@@ -57,12 +60,35 @@ struct EditPane: View {
                     }
                 }
 
-                Section("Scan", tips: ["dust", "dpi"]) {
-                    Toggle(isOn: Binding(get: { store.dust }, set: { store.touched("dust"); store.dust = $0 })) {
-                        Label("Remove dust", systemImage: "sparkles")
+                Section("Dust", tips: ["dust"]) {
+                    if store.hasIR {
+                        HStack {
+                            Toggle(isOn: Binding(get: { store.edit.dust }, set: { store.touched("dust"); store.edit.dust = $0 })) {
+                                Label("Remove dust", systemImage: "sparkles")
+                            }
+                            .toggleStyle(.switch)
+                            if store.cleaningDust { ProgressView().controlSize(.small) }
+                            Spacer()
+                            ResetButton(setting: .dust)
+                        }
+                        if store.cleaningDust {
+                            Text("Finding dust in the infrared scan…").font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else if let f = store.dustFraction {
+                            Text(String(format: "Dust and scratches cover %.2f%% of this frame.", f * 100))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    } else if store.phase == .editing {
+                        Text("This scan was made without infrared, so its dust can't be removed now.")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                        Button { Task { await store.scan() } } label: { Label("Rescan to remove dust (about 1 min)", systemImage: "arrow.clockwise") }
+                            .buttonStyle(QuietButton())
+                    } else {
+                        Text("Dust is removed on the full scan, from its infrared pass.")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
                     }
-                    .toggleStyle(.switch)
-                    .disabled(store.phase == .editing)
+                }
+
+                Section("Scan", tips: ["dpi"]) {
                     HStack {
                         Label("Resolution", systemImage: "square.resize").font(.system(size: 13))
                         Spacer()
@@ -70,10 +96,7 @@ struct EditPane: View {
                             ForEach([1200, 2400, 3600, 7200], id: \.self) { Text(verbatim: "\($0) dpi").tag($0) }
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
-                    }
-                    .disabled(store.phase == .editing)
-                    if store.phase == .editing {
-                        Text("These apply to the next scan.").font(.system(size: 11)).foregroundStyle(.secondary)
+                        ResetButton(setting: .dpi)
                     }
                 }
 
@@ -110,6 +133,25 @@ private struct Section<Content: View>: View {
     }
 }
 
+/// The small Photos-style reset: only there when the setting differs from its default.
+struct ResetButton: View {
+    @EnvironmentObject var store: Store
+    let setting: Setting
+    var body: some View {
+        let on = store.isChanged(setting)
+        Button { store.reset(setting) } label: {
+            Image(systemName: "arrow.uturn.backward").font(.system(size: 10, weight: .semibold))
+                .frame(width: 18, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .opacity(on ? 1 : 0)
+        .allowsHitTesting(on)
+        .help(store.resetHelp(setting))
+        .onChange(of: on) { _, now in if now { store.touched("reset") } }
+    }
+}
+
 struct AdjustSlider: View {
     @EnvironmentObject var store: Store
     let id: String
@@ -117,6 +159,8 @@ struct AdjustSlider: View {
     let symbol: String
     @Binding var value: Double
     var track: [Color]? = nil
+    var onEditing: ((Bool) -> Void)? = nil
+    var onHover: ((Bool) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -126,20 +170,22 @@ struct AdjustSlider: View {
                 Text(value == 0 ? "Auto" : String(format: "%+.0f", value * 100))
                     .font(.system(size: 12).monospacedDigit())
                     .foregroundStyle(value == 0 ? .secondary : .primary)
+                if let s = Setting(rawValue: id) { ResetButton(setting: s) }
             }
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) { value = 0 }
+            .onTapGesture(count: 2) { if let s = Setting(rawValue: id) { store.reset(s) } }
             .help("Double-click to reset")
             ZStack {
                 if let track {
                     LinearGradient(colors: track, startPoint: .leading, endPoint: .trailing)
                         .frame(height: 3).clipShape(Capsule()).opacity(0.55).padding(.horizontal, 2)
                 }
-                Slider(value: $value, in: -1...1) { editing in if editing { store.touched(id) } }
+                Slider(value: $value, in: -1...1) { editing in if editing { store.touched(id); store.recordUndo() }; onEditing?(editing) }
                     .controlSize(.small)
                     .tint(track == nil ? .white : .clear)
             }
         }
+        .onHover { onHover?($0) }
     }
 }
 

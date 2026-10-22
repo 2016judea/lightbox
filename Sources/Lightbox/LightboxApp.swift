@@ -26,6 +26,10 @@ struct LightboxApp: App {
                 Button("Save 16-bit TIFF") { Task { await store.export(.tiff) } }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("Add to Photos") { Task { await store.addToPhotos() } }.keyboardShortcut("p", modifiers: [.command, .shift])
             }
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { store.undo() }.keyboardShortcut("z")
+                Button("Redo") { store.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .help) {
                 Button("Show the Walkthrough and Tips Again") { store.resetTips() }
             }

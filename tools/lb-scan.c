@@ -33,6 +33,7 @@ static int read_frame(SANE_Handle h, const char *path, int frame_no, int frames)
     if (st != SANE_STATUS_GOOD) { fprintf(stderr, "start: %s\n", sane_strstatus(st)); return -1; }
     SANE_Parameters p;
     sane_get_parameters(h, &p);
+    fprintf(stderr, "frame %d: format %d last_frame %d %dx%d depth %d\n", frame_no, p.format, p.last_frame, p.pixels_per_line, p.lines, p.depth);
     int ch = p.format == SANE_FRAME_RGB ? 3 : 1;
     FILE *f = fopen(path, "wb");
     if (!f) { perror(path); return -1; }
@@ -64,8 +65,11 @@ int main(int argc, char **argv) {
     if (set_opt(h, "mode", "Color+Infrared", 0) || set_opt(h, "depth", NULL, 16) ||
         set_opt(h, "resolution", NULL, atof(argv[2])) || set_opt(h, "exposure", NULL, atof(argv[3]))) { sane_close(h); return 1; }
     int r = read_frame(h, argv[4], 0, 2);
-    if (r == 0) r = read_frame(h, argv[5], 1, 2);
-    else { fprintf(stderr, "backend returned one frame only\n"); r = -1; }
+    if (r >= 0) {
+        /* the backend hands out the IR plane on the next sane_start */
+        int r2 = read_frame(h, argv[5], 1, 2);
+        if (r2 < 0) { fprintf(stderr, "no infrared frame\n"); r = -1; } else r = 0;
+    }
     sane_cancel(h); sane_close(h); sane_exit();
     fprintf(stderr, "Progress: 100.0%%\n");
     return r < 0 ? 1 : 0;

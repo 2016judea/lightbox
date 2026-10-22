@@ -5,8 +5,8 @@ struct FilmChips: View {
     var body: some View {
         // stacked: side by side they are wider than the 290 pt pane
         VStack(alignment: .leading, spacing: 8) {
-            TypeChip()
-            StockChip()
+            HStack { TypeChip(); Spacer(); ResetButton(setting: .filmType) }
+            HStack { StockChip(); Spacer(); ResetButton(setting: .stock) }
         }
     }
 }

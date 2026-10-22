@@ -92,8 +92,25 @@ struct CanvasView: View {
                     CropOverlay(image: full, initial: store.displayCrop)
                 } else if store.comparing, let img = store.image, let lab = store.labOriented {
                     CompareView(ours: img, lab: lab)
+                } else if let z = store.zoomed {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(decorative: z, scale: NSScreen.main?.backingScaleFactor ?? 2)
+                    }
+                    .onTapGesture(count: 2) { store.toggleZoom() }
+                    .overlay(alignment: .topLeading) { Text("100%  ·  double-click to fit").chipStyle().padding(12) }
                 } else if let img = store.image {
                     ImageView(image: img)
+                        .onTapGesture(count: 2) { if store.phase == .editing { store.toggleZoom() } }
+                        .overlay(alignment: .topTrailing) {
+                            if let l = store.loupe {
+                                Image(decorative: l, scale: NSScreen.main?.backingScaleFactor ?? 2)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.8), lineWidth: 1.5))
+                                    .overlay(alignment: .topLeading) { Text("100%").chipStyle().padding(8) }
+                                    .shadow(radius: 12).padding(12)
+                                    .transition(.opacity)
+                            }
+                        }
                         .overlay(alignment: .topLeading) {
                             if store.phase == .previewed {
                                 Text(verbatim: "Preview · \(Store.previewDPI) dpi. Scan for the full picture.")

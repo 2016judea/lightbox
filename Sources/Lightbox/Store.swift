@@ -58,6 +58,18 @@ final class Store: ObservableObject {
     let scanner = Scanner()
     private var device = ""
     private var working: RawImage?       // downsampled, for live editing
+    private var full: RawImage?          // the full-resolution scan, kept for export and the loupe
+    private var fullClean: RawImage?     // the same with dust removed from the infrared plane
+    private var workingClean: RawImage?
+    @Published var hasIR = false
+    @Published var loupe: CGImage?          // 1:1 crop of the full scan, shown while sharpening
+    @Published var zoomed: CGImage?         // the whole picture at 100%, on double-click
+    private var focus: (x: Double, y: Double)?
+    @Published var cleaningDust = false
+    @Published var dustFraction: Double?
+    /// The image being edited: dust-cleaned when that's on and ready.
+    var displayRaw: RawImage? { (edit.dust && workingClean != nil) ? workingClean : working }
+    var exportRaw: RawImage? { (edit.dust && fullClean != nil) ? fullClean : full }
     private var fullURL: URL?            // the full-resolution raw on disk
     private(set) var analysis: Analysis?
     private var renderTask: Task<Void, Never>?
@@ -138,26 +150,24 @@ final class Store: ObservableObject {
         guard !device.isEmpty else { await checkScanner(); return }
         let folder = sessionFolder
         let url = folder.appendingPathComponent(frameStem + "-raw.pnm")
+        let irURL = Dust.irURL(for: url)
         phase = .scanning(0)
         do {
-            try await scanner.scan(device: device, settings: .init(dpi: dpi, dust: dust), to: url) { [weak self] p in
-                self?.phase = .scanning(p)
+            if scanner.canCaptureIR {
+                try await scanner.scanWithIR(device: device, dpi: dpi, exposure: 1.0, rgb: url, ir: irURL) { [weak self] p in
+                    self?.phase = .scanning(p)
+                }
+            } else {
+                try await scanner.scan(device: device, settings: .init(dpi: dpi, dust: dust), to: url) { [weak self] p in
+                    self?.phase = .scanning(p)
+                }
             }
-            let ft = edit.filmType
-            let (w, a) = try await Task.detached { () -> (RawImage, Analysis) in
-                let full = try RawImage.loadPNM(url)
-                let w = full.downsampled(maxSide: 2000)
-                return (w, Develop.analyse(w, filmType: ft))
-            }.value
-            working = w
-            analysis = a
-            fullURL = url
-            phase = .editing
-            rerender()
+            edit.dust = dust
+            try await load(url, keepEdit: true)
             saveSidecar()
             if case .found = lab {} else { findLabScan() }
         } catch is CancellationError {
-            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: url); try? FileManager.default.removeItem(at: irURL)
             phase = .previewed
         } catch {
             errorMessage = error.localizedDescription
@@ -165,26 +175,53 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Loads a full scan (and its infrared plane, if it has one) for editing.
+    private func load(_ url: URL, keepEdit: Bool) async throws {
+        let ft = edit.filmType
+        let (f, w, a) = try await Task.detached { () -> (RawImage, RawImage, Analysis) in
+            let full = try RawImage.load(url)
+            let w = full.downsampled(maxSide: 2000)
+            return (full, w, Develop.analyse(w, filmType: ft))
+        }.value
+        full = f; working = w; analysis = a; fullURL = url; focus = nil; loupe = nil; zoomed = nil
+        fullClean = nil; workingClean = nil; dustFraction = nil
+        let irURL = Dust.irURL(for: url)
+        hasIR = FileManager.default.fileExists(atPath: irURL.path)
+        phase = .editing
+        rerender()
+        if hasIR { cleanDust(irURL) }
+    }
+
+    /// Finds and removes dust off the main thread; the toggle shows a spinner meanwhile.
+    private func cleanDust(_ irURL: URL) {
+        guard let f = full else { return }
+        cleaningDust = true
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let t0 = Date()
+            guard let ir = try? Dust.loadPGM(irURL) else { await self?.dustDone(nil, nil, nil); return }
+            let (clean, frac) = Dust.clean(f, ir: ir)
+            let wc = clean.downsampled(maxSide: 2000)
+            LabIndex.note(String(format: "dust: %.2f%% of the frame in %.1fs", frac * 100, Date().timeIntervalSince(t0)))
+            await self?.dustDone(clean, wc, frac)
+        }
+    }
+
+    private func dustDone(_ c: RawImage?, _ wc: RawImage?, _ f: Double?) {
+        fullClean = c; workingClean = wc; dustFraction = f; cleaningDust = false
+        rerender()
+    }
+
     func cancelScan() { scanner.cancel() }
 
     /// Opens a raw scan Lightbox (or scanimage) wrote earlier, for a re-edit.
     func open(_ url: URL) async {
         do {
-            let ft = edit.filmType
-            let (w, a) = try await Task.detached { () -> (RawImage, Analysis) in
-                let full = try RawImage.load(url)
-                let w = full.downsampled(maxSide: 2000)
-                return (w, Develop.analyse(w, filmType: ft))
-            }.value
-            working = w; analysis = a; fullURL = url
             let side = url.deletingPathExtension().appendingPathExtension("json")
             if let d = try? Data(contentsOf: side), let s = try? JSONDecoder().decode(Sidecar.self, from: d) {
                 edit = s.edit; stock = s.stock
-                analysis = Develop.analyse(w, filmType: edit.filmType)
             }
-            guess = FilmDetect.guess(w)
-            phase = .editing
-            rerender()
+            try await load(url, keepEdit: true)
+            if let w = working { guess = FilmDetect.guess(w) }
             findLabScan()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -194,7 +231,10 @@ final class Store: ObservableObject {
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored
         image = nil; uncropped = nil; working = nil; analysis = nil; fullURL = nil; lastExport = nil
+        full = nil; fullClean = nil; workingClean = nil; hasIR = false; dustFraction = nil
+        loupe = nil; zoomed = nil; focus = nil
         labTask?.cancel(); lab = .idle; labImage = nil; comparing = false
+        labMatched = nil; undoStack.removeAll(); redoStack.removeAll()
         phase = .ready
     }
 
@@ -204,10 +244,76 @@ final class Store: ObservableObject {
         nextFrame()
     }
 
+    // MARK: resets and undo
+
+    /// Values from "Match lab colour", which become the reset point for exposure, warmth and tint.
+    @Published var labMatched: Edit?
+    private var undoStack: [Edit] = [], redoStack: [Edit] = []
+
+    /// What each setting resets to for this frame.
+    var baseline: Edit {
+        var b = Edit(filmType: guess?.type ?? edit.filmType)
+        if let m = labMatched { b.exposure = m.exposure; b.warmth = m.warmth; b.tint = m.tint }
+        if case .found(let lm) = lab { b.rotation = lm.rotation }
+        b.dust = dust
+        return b
+    }
+
+    func isChanged(_ s: Setting) -> Bool {
+        switch s {
+        case .stock: return stock != FilmStock.defaultName
+        case .dpi: return dpi != 3600
+        default: return Setting.differs(s, edit, baseline)
+        }
+    }
+
+    func resetHelp(_ s: Setting) -> String {
+        switch s {
+        case .stock: return "Back to \(FilmStock.defaultName)"
+        case .dpi: return "Back to 3600 dpi"
+        case .exposure, .warmth, .tint where labMatched != nil: return "Back to the lab-matched value"
+        case .filmType: return "Back to the detected type"
+        case .cropRotate: return labMatched != nil || { if case .found = lab { return true }; return false }()
+            ? "Back to the auto crop, turned the way the lab scan is" : "Back to the auto crop"
+        default: return "Back to \(stock.isEmpty ? "the" : stock + "'s") starting point"
+        }
+    }
+
+    func reset(_ s: Setting) {
+        recordUndo()
+        switch s {
+        case .stock: chooseStock(FilmStock.defaultName)
+        case .dpi: dpi = 3600
+        case .filmType: typeLocked = false; let t = baseline.filmType; edit = Setting.reset(s, edit, to: baseline); setFilmType(t); editChanged()
+        default: edit = Setting.reset(s, edit, to: baseline); editChanged()
+        }
+    }
+
+    /// Call before a discrete change (a reset, a rotate, the start of a slider drag).
+    func recordUndo() {
+        if undoStack.last != edit { undoStack.append(edit); if undoStack.count > 100 { undoStack.removeFirst() } }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let prev = undoStack.popLast() else { return }
+        redoStack.append(edit); edit = prev
+        if let w = working { analysis = Develop.analyse(w, filmType: edit.filmType) }
+        editChanged()
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(edit); edit = next
+        if let w = working { analysis = Develop.analyse(w, filmType: edit.filmType) }
+        editChanged()
+    }
+
     // MARK: editing
 
     /// Called when he picks the type himself; detection then leaves the roll alone.
     func chooseFilmType(_ t: FilmType) {
+        recordUndo()
         typeLocked = (t != guess?.type)
         setFilmType(t)
     }
@@ -228,7 +334,7 @@ final class Store: ObservableObject {
     }
 
     func rerender() {
-        guard let w = working, let a = analysis else { return }
+        guard let w = displayRaw, let a = analysis else { return }
         let e = edit
         let look = self.look
         let wantUncropped = cropping
@@ -246,18 +352,75 @@ final class Store: ObservableObject {
         if wantUncropped { uncropped = full }
     }
 
-    func editChanged() { rerender(); if phase == .editing { saveSidecar() } }
+    func editChanged() {
+        rerender(); if phase == .editing { saveSidecar() }
+        if loupe != nil { updateLoupe() }
+    }
+
+    /// The busiest detail in the frame (highest local Laplacian variance), where sharpening shows.
+    private func busiestPoint() -> (Double, Double) {
+        if let focus { return focus }
+        guard let w = working else { return (0.5, 0.5) }
+        let W = w.width, H = w.height, t = 64
+        var best = (0.5, 0.5), bestV = -1.0
+        let box = analysis?.box ?? .full
+        for ty in stride(from: Int(box.y * Double(H)) + t, to: Int((box.y + box.h) * Double(H)) - t, by: t) {
+            for tx in stride(from: Int(box.x * Double(W)) + t, to: Int((box.x + box.w) * Double(W)) - t, by: t) {
+                var s = 0.0, s2 = 0.0, n = 0.0
+                for y in stride(from: ty, to: ty + t, by: 2) { for x in stride(from: tx, to: tx + t, by: 2) {
+                    func g(_ x: Int, _ y: Int) -> Double { Double(w.pixels[(y * W + x) * 3 + 1]) }
+                    let l = g(x - 1, y) + g(x + 1, y) + g(x, y - 1) + g(x, y + 1) - 4 * g(x, y)
+                    s += l; s2 += l * l; n += 1
+                } }
+                let v = s2 / n - (s / n) * (s / n)
+                if v > bestV { bestV = v; best = ((Double(tx) + Double(t) / 2) / Double(W), (Double(ty) + Double(t) / 2) / Double(H)) }
+            }
+        }
+        focus = best
+        return best
+    }
+
+    /// Shows or refreshes the 100% loupe: a 420 px crop of the FULL scan, sharpened at export scale.
+    func updateLoupe() {
+        guard let f = exportRaw, let a = analysis else { return }
+        let (cx, cy) = busiestPoint()
+        let side = 420.0
+        let r = NRect(x: max(0, min(1 - side / Double(f.width), cx - side / 2 / Double(f.width))),
+                      y: max(0, min(1 - side / Double(f.height), cy - side / 2 / Double(f.height))),
+                      w: side / Double(f.width), h: side / Double(f.height))
+        let e = edit, look = self.look
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let img = Develop.render(f, a, e, crop: r, look: look)
+            await MainActor.run { self?.loupe = img }
+        }
+    }
+
+    func hideLoupe() { loupe = nil }
+
+    /// Double-click: the whole picture at 100% (one scan pixel per screen pixel), and back.
+    func toggleZoom() {
+        if zoomed != nil { zoomed = nil; return }
+        guard let f = exportRaw, let a = analysis else { return }
+        let e = edit, look = self.look
+        toast = "Rendering at 100%…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let img = Develop.render(f, a, e, look: look)
+            await MainActor.run { self?.zoomed = img; self?.toast = nil }
+        }
+    }
 
     func rotate(_ dir: Int) {
+        recordUndo()
         edit.rotation = ((edit.rotation + dir) % 4 + 4) % 4
         touched("rotate"); editChanged()
     }
 
-    func toggleMirror() { edit.mirrored.toggle(); touched("rotate"); editChanged() }
+    func toggleMirror() { recordUndo(); edit.mirrored.toggle(); touched("rotate"); editChanged() }
 
     func startCrop() { cropping = true; touched("crop"); rerender() }
 
     func finishCrop(display: NRect?) {
+        recordUndo()
         if let d = display { edit.crop = Develop.toRaw(d, rotation: edit.rotation, mirrored: edit.mirrored) }
         cropping = false
         editChanged()
@@ -270,7 +433,9 @@ final class Store: ObservableObject {
     }
 
     func resetAdjustments() {
-        edit.exposure = 0; edit.warmth = 0; edit.tint = 0; edit.contrast = 0; edit.sharpen = 0
+        recordUndo()
+        let b = baseline
+        edit.exposure = b.exposure; edit.warmth = b.warmth; edit.tint = b.tint; edit.contrast = b.contrast; edit.sharpen = b.sharpen
         editChanged()
     }
 
@@ -364,7 +529,9 @@ final class Store: ObservableObject {
         let e = edit, look = self.look
         toast = "Matching the lab's colour…"
         let (fit, before, after) = await Task.detached { LabCompare.fit(w, a, e, look: look, lab: lab) }.value
+        recordUndo()
         edit.exposure = fit.exposure; edit.warmth = fit.warmth; edit.tint = fit.tint
+        labMatched = edit
         editChanged()
         toast = after < before - 0.5 ? "Matched the lab's colour" : "Already close to the lab's colour"
     }
@@ -425,10 +592,11 @@ final class Store: ObservableObject {
             toast = "Already saved" + (le.version > 1 ? " as v\(le.version)" : ""); return le.url
         }
         let e = edit, stock = self.stock, look = self.look
+        let cached = exportRaw
         let (out, version) = Self.versionedURL(folder: fullURL.deletingLastPathComponent(), stem: frameStemFrom(fullURL), ext: ext)
         toast = "Saving…"
         let ok = await Task.detached { () -> Bool in
-            guard let full = try? RawImage.load(fullURL),
+            guard let full = cached ?? (try? RawImage.load(fullURL)),
                   let img = Develop.render(full, a, e, sixteenBit: format == .tiff, look: look),
                   let dest = CGImageDestinationCreateWithURL(out as CFURL,
                         (format == .jpeg ? UTType.jpeg : UTType.tiff).identifier as CFString, 1, nil)

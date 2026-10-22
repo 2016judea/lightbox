@@ -39,7 +39,24 @@ struct Edit: Codable, Equatable {
     var rotation: Int = 0          // quarter turns clockwise
     var mirrored = false
     var crop: NRect? = nil         // nil = the auto-detected picture area
-    var sharpen: Double = 0        // -1 (none) ... 1 (double); 0 = lab-like default
+    var sharpen: Double = 0        // -1 (none) ... 1 (crunchy); 0 = lab-like default
+    var dust = true                // remove dust from the infrared plane, when the frame has one
+
+    enum CodingKeys: String, CodingKey { case filmType, exposure, warmth, tint, contrast, rotation, mirrored, crop, sharpen, dust }
+    /// Every field optional on the way in, so sidecars written by older versions still open.
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        filmType = try c.decodeIfPresent(FilmType.self, forKey: .filmType) ?? .colorNegative
+        exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
+        warmth = try c.decodeIfPresent(Double.self, forKey: .warmth) ?? 0
+        tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
+        contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? 0
+        rotation = try c.decodeIfPresent(Int.self, forKey: .rotation) ?? 0
+        mirrored = try c.decodeIfPresent(Bool.self, forKey: .mirrored) ?? false
+        crop = try c.decodeIfPresent(NRect.self, forKey: .crop)
+        sharpen = try c.decodeIfPresent(Double.self, forKey: .sharpen) ?? 0
+        dust = try c.decodeIfPresent(Bool.self, forKey: .dust) ?? true
+    }
 }
 
 /// What the scan itself says: film base, where the picture is, and each channel's density range.
@@ -260,10 +277,16 @@ enum Develop {
         let oriented = orient(img, rotation: e.rotation, mirrored: e.mirrored)
         // Output sharpening, as every lab scanner applies. Radius is set for a 3600 dpi frame and
         // scaled to the size being rendered, so the preview and the export look alike.
-        let amount = 0.6 * (1 + e.sharpen)
+        let (amount, radius1) = sharpening(e.sharpen)
         guard amount > 0.01, let o = oriented else { return oriented }
-        let radius = max(0.3, 1.4 * Double(cw) / Double(max(1, Int(crop.w * 5184))))
+        let radius = max(0.3, radius1 * Double(cw) / Double(max(1, Int(crop.w * 5184))))
         return sharpen(o, radius: radius, amount: amount)
+    }
+
+    /// Slider -1...1 to unsharp-mask amount and radius at 3600 dpi. Left = none, 0 = lab-like,
+    /// right = clearly crunchy at 100%.
+    static func sharpening(_ s: Double) -> (amount: Double, radius: Double) {
+        s <= 0 ? (0.6 * (1 + s), 1.4) : (0.6 + 1.9 * s, 1.4 + 0.8 * s)
     }
 
     static let ciContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
