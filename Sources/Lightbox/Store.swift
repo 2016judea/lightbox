@@ -3,6 +3,7 @@ import SwiftUI
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import Photos
 
 @MainActor
 final class Store: ObservableObject {
@@ -32,7 +33,6 @@ final class Store: ObservableObject {
     }
     @Published var frameNumber = 1
     @Published var toast: String?
-    @Published var lastSaved: URL?
     @Published var errorMessage: String?
     @Published var activeTip: CoachTip?
     @Published var guess: FilmGuess?
@@ -193,7 +193,7 @@ final class Store: ObservableObject {
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored
-        image = nil; uncropped = nil; working = nil; analysis = nil; fullURL = nil; lastSaved = nil
+        image = nil; uncropped = nil; working = nil; analysis = nil; fullURL = nil; lastExport = nil
         labTask?.cancel(); lab = .idle; labImage = nil; comparing = false
         phase = .ready
     }
@@ -276,29 +276,70 @@ final class Store: ObservableObject {
 
     // MARK: lab scan
 
-    /// In the background: bring the Photos index up to date, then look for this frame's lab scan.
+    @Published var indexProgress: (done: Int, total: Int)? = nil {
+        didSet { if let p = indexProgress, case .searching = lab {
+            lab = .searching("Reading your Photos: \(p.done.formatted()) of \(p.total.formatted())") } }
+    }
+
+    /// At launch, if Photos access is already granted: bring the index up to date in the background,
+    /// so a scan only ever needs a query. Progress shows only while the first build runs.
+    /// Off in tests, which must never touch his Photos library.
+    nonisolated(unsafe) static var labSearchEnabled = true
+
+    func warmLabIndex() {
+        guard Store.labSearchEnabled, PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        let idx = LabIndex.shared
+        Task.detached(priority: .utility) { [weak self] in
+            idx.openIfExists()
+            let first = !idx.isBuilt
+            _ = try? await idx.sharedSync(progress: { n, t in
+                if first { Task { @MainActor in self?.indexProgress = (n, t) } }
+            })
+            await MainActor.run { self?.indexProgress = nil }
+        }
+    }
+
+    /// After a preview or scan: query straight away if the index is warm (one ANN search, ~50 ms);
+    /// otherwise build it, Film album first, and try the query as soon as that part is in.
     func findLabScan() {
-        guard let w = working, let a = analysis else { return }
+        guard Store.labSearchEnabled, let w = working, let a = analysis else { return }
         labTask?.cancel()
         let e0 = Edit(filmType: edit.filmType)          // raw orientation; the matcher tries all four
         let look = self.look
         lab = .searching("Looking for your lab scan…")
         touched("lab")
-        labTask = Task.detached(priority: .utility) { [weak self] in
+        labTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard await LabIndex.authorize() else { await self?.setLab(.denied, nil); return }
             let idx = LabIndex.shared
-            do {
-                _ = try await idx.sync { n, total in
-                    Task { @MainActor in self?.lab = .searching("Reading your Photos… \(n * 100 / max(total, 1))%") }
-                }
-                guard let q = Develop.render(w, a, e0, crop: .full, look: look) else { return }
-                let (m, _) = try idx.query(q)
-                if Task.isCancelled { return }
-                if let m {
-                    let img = LabIndex.fullImage(m.assetId, side: 2400)
-                    await self?.setLab(.found(m), img)
-                } else { await self?.setLab(.none, nil) }
-            } catch { await self?.setLab(.none, nil) }
+            guard let q = Develop.render(w, a, e0, crop: .full, look: look) else { return }
+            let t0 = Date()
+            func attempt(_ label: String) async -> Bool {
+                guard let (m, _) = try? idx.query(q), let m else { return false }
+                LabIndex.note(String(format: "match (%@) in %.0f ms after scan: d=%.4f s=%.3f conf=%.2f",
+                                     label, Date().timeIntervalSince(t0) * 1000, m.distance, m.structure, m.confidence))
+                let img = LabIndex.fullImage(m.assetId, side: 2400)
+                await self?.setLab(.found(m), img)
+                return true
+            }
+            idx.openIfExists()
+            if idx.isBuilt, await attempt("warm") {
+                _ = try? await idx.sharedSync()           // pick up new photos quietly, after the answer
+                return
+            }
+            let first = !idx.isBuilt
+            var found = false
+            _ = try? await idx.sharedSync(progress: { n, t in
+                if first { Task { @MainActor in self?.indexProgress = (n, t) } }
+            }, onPriority: {
+                Task { if await attempt("film album first") { found = true } }
+            })
+            await MainActor.run { self?.indexProgress = nil }
+            if Task.isCancelled { return }
+            if !found, await attempt("after sync") { return }
+            if !found {
+                LabIndex.note(String(format: "no match after %.1fs", Date().timeIntervalSince(t0)))
+                if case .found = await self?.lab {} else { await self?.setLab(.none, nil) }
+            }
         }
     }
 
@@ -335,29 +376,56 @@ final class Store: ObservableObject {
         var labMatch: LabMatch? = nil
     }
 
+    private var sidecarTask: Task<Void, Never>?
+
+    /// Debounced, and written off the main thread: called on every edit, so never from a view body.
     func saveSidecar() {
         guard let u = fullURL else { return }
         var labMatch: LabMatch? = nil
         if case .found(let m) = lab { labMatch = m }
         let s = Sidecar(edit: edit, stock: stock, dpi: dpi, dust: dust, scannedAt: Date(), labMatch: labMatch)
-        if let d = try? JSONEncoder().encode(s) {
-            try? d.write(to: u.deletingPathExtension().appendingPathExtension("json"))
+        sidecarTask?.cancel()
+        sidecarTask = Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if Task.isCancelled { return }
+            if let d = try? JSONEncoder().encode(s) { try? d.write(to: u.deletingPathExtension().appendingPathExtension("json")) }
         }
     }
 
     enum Format { case jpeg, tiff }
 
+    /// What was last written, so an unchanged picture isn't written or imported twice.
+    struct ExportRecord: Equatable {
+        var edit: Edit; var stock: String; var format: String; var url: URL; var version: Int; var inPhotos: Bool
+    }
+    @Published private(set) var lastExport: ExportRecord?
+    var lastSaved: URL? { lastExport?.url }
+
+    /// frame-01.jpg, then "frame-01 v2.jpg", "frame-01 v3.jpg"… never overwriting an earlier version.
+    nonisolated static func versionedURL(folder: URL, stem: String, ext: String) -> (URL, Int) {
+        let fm = FileManager.default
+        let first = folder.appendingPathComponent("\(stem).\(ext)")
+        if !fm.fileExists(atPath: first.path) { return (first, 1) }
+        var n = 2
+        while fm.fileExists(atPath: folder.appendingPathComponent("\(stem) v\(n).\(ext)").path) { n += 1 }
+        return (folder.appendingPathComponent("\(stem) v\(n).\(ext)"), n)
+    }
+
+    /// Renders the CURRENT edit at full resolution. If nothing changed since the last save of this
+    /// format, returns that file instead of writing a duplicate.
     @discardableResult
     func export(_ format: Format) async -> URL? {
         guard let fullURL, let a = analysis else {
             errorMessage = "Scan the frame first. The preview is too small to keep."
             return nil
         }
-        let e = edit
-        let stock = self.stock
-        let look = self.look
         let ext = format == .jpeg ? "jpg" : "tif"
-        let out = fullURL.deletingLastPathComponent().appendingPathComponent(frameStemFrom(fullURL) + "." + ext)
+        if let le = lastExport, le.edit == edit, le.stock == stock, le.format == ext,
+           FileManager.default.fileExists(atPath: le.url.path) {
+            toast = "Already saved" + (le.version > 1 ? " as v\(le.version)" : ""); return le.url
+        }
+        let e = edit, stock = self.stock, look = self.look
+        let (out, version) = Self.versionedURL(folder: fullURL.deletingLastPathComponent(), stem: frameStemFrom(fullURL), ext: ext)
         toast = "Saving…"
         let ok = await Task.detached { () -> Bool in
             guard let full = try? RawImage.load(fullURL),
@@ -376,10 +444,16 @@ final class Store: ObservableObject {
             if format == .jpeg { props[kCGImageDestinationLossyCompressionQuality] = 0.92 }
             else { props[kCGImagePropertyTIFFDictionary] = [kCGImagePropertyTIFFCompression: 5, kCGImagePropertyTIFFSoftware: "Lightbox"] as [CFString: Any] }
             CGImageDestinationAddImage(dest, img, props as CFDictionary)
-            return CGImageDestinationFinalize(dest)
+            guard CGImageDestinationFinalize(dest) else { return false }
+            // this version's own sidecar, next to it; the raw's sidecar is left alone
+            let side = Sidecar(edit: e, stock: stock, dpi: 0, dust: false, scannedAt: Date())
+            if let d = try? JSONEncoder().encode(side) { try? d.write(to: out.deletingPathExtension().appendingPathExtension("json")) }
+            return true
         }.value
-        if ok { lastSaved = out; toast = "Saved to \(out.deletingLastPathComponent().lastPathComponent)" }
-        else { toast = nil; errorMessage = "Couldn't save the picture." }
+        if ok {
+            lastExport = ExportRecord(edit: e, stock: stock, format: ext, url: out, version: version, inPhotos: false)
+            toast = "Saved" + (version > 1 ? " v\(version)" : "") + " to \(out.deletingLastPathComponent().lastPathComponent)"
+        } else { toast = nil; errorMessage = "Couldn't save the picture." }
         return ok ? out : nil
     }
 
@@ -388,11 +462,8 @@ final class Store: ObservableObject {
         return n.hasSuffix("-raw") ? String(n.dropLast(4)) : n
     }
 
-    func addToPhotos() async {
-        var file = lastSaved
-        if file == nil || file?.pathExtension != "jpg" { file = await export(.jpeg) }
-        guard let file else { return }
-        toast = "Adding to Photos…"
+    /// Sends a file to the Film album; returns an error message or nil. Swappable for tests.
+    var photosImporter: (URL) async -> String? = { file in
         let path = file.path.replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
         tell application "Photos"
@@ -400,7 +471,7 @@ final class Store: ObservableObject {
             import {POSIX file "\(path)"} into album "Film" skip check duplicates true
         end tell
         """
-        let result = await Task.detached { () -> String? in
+        return await Task.detached { () -> String? in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             p.arguments = ["-e", script]
@@ -409,8 +480,16 @@ final class Store: ObservableObject {
             p.waitUntilExit()
             return p.terminationStatus == 0 ? nil : String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         }.value
-        if let result { toast = nil; errorMessage = "Photos didn't take it: \(result)" }
-        else { toast = "In Photos, in your Film album" }
+    }
+
+    /// Always the current edit: saves a new version if anything changed, then imports that file.
+    func addToPhotos() async {
+        guard let file = await export(.jpeg), let rec = lastExport, rec.url == file else { return }
+        if rec.inPhotos { toast = "Already in Photos"; return }
+        toast = "Adding to Photos…"
+        if let err = await photosImporter(file) { toast = nil; errorMessage = "Photos didn't take it: \(err)"; return }
+        lastExport?.inPhotos = true
+        toast = "Saved" + (rec.version > 1 ? " v\(rec.version)" : "") + " to Photos · Film"
     }
 
     func revealInFinder() {

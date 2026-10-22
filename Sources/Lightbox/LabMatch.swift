@@ -54,7 +54,7 @@ final class LabIndex: @unchecked Sendable {
     var dbPath: String { dir.appendingPathComponent("labindex.sqlite").path }
 
     static var visionRevision: Int { VNGenerateImageFeaturePrintRequest.currentRevision }
-    static let thumbMethod = "imageio-360"
+    static var thumbMethod: String { useFastThumbs ? "photokit-300" : "imageio-360" }
 
     // MARK: feature prints
 
@@ -102,6 +102,7 @@ final class LabIndex: @unchecked Sendable {
             sqlite3_open(dbPath, &db)
             exec("PRAGMA journal_mode=WAL")
             exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+            exec("CREATE TABLE IF NOT EXISTS skipped(local_id TEXT PRIMARY KEY, modified REAL)")
             exec("""
                 CREATE TABLE IF NOT EXISTS assets(key INTEGER PRIMARY KEY AUTOINCREMENT, local_id TEXT UNIQUE,
                   created REAL, modified REAL, albums TEXT, is_film INTEGER, vector BLOB)
@@ -110,7 +111,7 @@ final class LabIndex: @unchecked Sendable {
         let stale = metaGet("dimension") != String(dimension) || metaGet("vision_revision") != String(Self.visionRevision)
             || metaGet("thumb_method") != Self.thumbMethod
         if stale {
-            exec("DELETE FROM assets")
+            exec("DELETE FROM assets"); exec("DELETE FROM skipped"); exec("DELETE FROM meta WHERE key='change_token'")
             try? FileManager.default.removeItem(atPath: indexPath)
             metaSet("dimension", String(dimension)); metaSet("vision_revision", String(Self.visionRevision))
             metaSet("thumb_method", Self.thumbMethod)
@@ -202,65 +203,212 @@ final class LabIndex: @unchecked Sendable {
         return out
     }
 
-    struct SyncStats { var total = 0, added = 0, removed = 0, skipped = 0; var seconds = 0.0 }
+    struct SyncStats { var total = 0, added = 0, removed = 0, skipped = 0, incremental = false; var seconds = 0.0; var phases: [String: Double] = [:] }
 
-    /// Adds new and changed assets, drops deleted ones. Film albums go first so a match can land
-    /// before the whole library is done.
-    func sync(progress: ((Int, Int) -> Void)? = nil) async throws -> SyncStats {
+    static var log: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Lightbox/lab.log") }
+    static func note(_ s: String) {
+        let line = ISO8601DateFormatter().string(from: Date()) + " " + s + "\n"
+        if let h = try? FileHandle(forWritingTo: log) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
+        else { try? line.write(to: log, atomically: true, encoding: .utf8) }
+    }
+
+    /// Thumbnail path used for indexing; picked by `--lab-bench` (see README).
+    static var useFastThumbs = true
+
+    static let caching = PHCachingImageManager()
+
+    /// PhotoKit's own small thumbnail: local even for iCloud-only photos, no download.
+    static func fastThumbnail(_ a: PHAsset, side: CGFloat = 300) -> CGImage? {
+        let o = PHImageRequestOptions()
+        o.isSynchronous = true; o.deliveryMode = .highQualityFormat; o.resizeMode = .exact
+        o.isNetworkAccessAllowed = false
+        var out: CGImage?
+        caching.requestImage(for: a, targetSize: CGSize(width: side, height: side), contentMode: .aspectFit, options: o) { img, _ in
+            guard let img else { return }
+            var r = CGRect(origin: .zero, size: img.size)
+            out = img.cgImage(forProposedRect: &r, context: nil, hints: nil)
+        }
+        return out
+    }
+
+    static func indexThumbnail(_ a: PHAsset) -> CGImage? {
+        useFastThumbs ? (fastThumbnail(a) ?? thumbnail(a)) : (thumbnail(a) ?? fastThumbnail(a))
+    }
+
+    private func isSkipped(_ id: String, _ mod: Double) -> Bool {
+        var st: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT 1 FROM skipped WHERE local_id=? AND modified=?", -1, &st, nil)
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT); sqlite3_bind_double(st, 2, mod)
+        defer { sqlite3_finalize(st) }
+        return sqlite3_step(st) == SQLITE_ROW
+    }
+
+    private func markSkipped(_ id: String, _ mod: Double) {
+        var st: OpaquePointer?
+        sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO skipped(local_id, modified) VALUES(?,?)", -1, &st, nil)
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT); sqlite3_bind_double(st, 2, mod)
+        sqlite3_step(st); sqlite3_finalize(st)
+    }
+
+    /// Opens an existing store from disk without touching Photos (dimension from the stored meta).
+    func openIfExists() {
+        if index != nil { return }
+        var tmp: OpaquePointer?
+        guard FileManager.default.fileExists(atPath: dbPath), sqlite3_open(dbPath, &tmp) == SQLITE_OK else { return }
+        var st: OpaquePointer?; var dim = 0
+        sqlite3_prepare_v2(tmp, "SELECT value FROM meta WHERE key='dimension'", -1, &st, nil)
+        if sqlite3_step(st) == SQLITE_ROW { dim = Int(String(cString: sqlite3_column_text(st, 0))) ?? 0 }
+        sqlite3_finalize(st); sqlite3_close(tmp)
+        if dim > 0 { try? open(dimension: dim) }
+    }
+
+    private var syncTask: Task<SyncStats, Error>?
+    var isBuilt: Bool { count > 0 }
+
+    /// One sync at a time; callers share it. `onPriority` fires once the Film album (and
+    /// film-shaped frames) are in, so a match can be tried before the rest of the library.
+    func sharedSync(progress: ((Int, Int) -> Void)? = nil, onPriority: (() -> Void)? = nil) async throws -> SyncStats {
+        let (t, mine): (Task<SyncStats, Error>, Bool) = lock.withLock {
+            if let t = syncTask { return (t, false) }
+            let t = Task { try await self.sync(progress: progress, onPriority: onPriority) }
+            syncTask = t
+            return (t, true)
+        }
+        defer { if mine { lock.withLock { syncTask = nil } } }
+        return try await t.value
+    }
+
+    /// Brings the index up to date. With a stored change token only the changed assets are read;
+    /// otherwise a full diff against the library (deleted dropped, new added, unavailable remembered).
+    func sync(progress: ((Int, Int) -> Void)? = nil, onPriority: (() -> Void)? = nil) async throws -> SyncStats {
         var stats = SyncStats()
         let t0 = Date()
-        // album membership
-        var albumsOf: [String: [String]] = [:]
-        var filmIds: [String] = []
-        let cols = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
-        cols.enumerateObjects { c, _, _ in
-            let title = c.localizedTitle ?? ""
-            let assets = PHAsset.fetchAssets(in: c, options: nil)
-            let isFilm = title.localizedCaseInsensitiveContains("film")
-            assets.enumerateObjects { a, _, _ in
-                albumsOf[a.localIdentifier, default: []].append(title)
-                if isFilm { filmIds.append(a.localIdentifier) }
-            }
-        }
-        let filmSet = Set(filmIds)
-        let opts = PHFetchOptions()
-        opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let all = PHAsset.fetchAssets(with: opts)
-        var ordered: [PHAsset] = []
-        ordered.reserveCapacity(all.count)
-        var rest: [PHAsset] = []
-        all.enumerateObjects { a, _, _ in if filmSet.contains(a.localIdentifier) { ordered.append(a) } else { rest.append(a) } }
-        ordered += rest
-        stats.total = ordered.count
+        var tp = Date()
+        func phase(_ n: String) { stats.phases[n, default: 0] += Date().timeIntervalSince(tp); tp = Date() }
+        let lib = PHPhotoLibrary.shared()
+        let tokenAtStart = lib.currentChangeToken
 
-        // dimension from a first print
+        openIfExists()
         if index == nil {
-            guard let first = ordered.first, let img = Self.thumbnail(first), let v = Self.featurePrint(img) else { return stats }
+            // dimension from one print
+            let o = PHFetchOptions(); o.fetchLimit = 1
+            o.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            guard let first = PHAsset.fetchAssets(with: o).firstObject, let img = Self.indexThumbnail(first),
+                  let v = Self.featurePrint(img) else { return stats }
             try open(dimension: v.count)
+            exec("CREATE TABLE IF NOT EXISTS skipped(local_id TEXT PRIMARY KEY, modified REAL)")
         }
-        var have = known()
-        let live = Set(ordered.map(\.localIdentifier))
-        for (id, (key, _)) in have where !live.contains(id) {
-            try? index?.remove(key: USearchKey(key)); exec("DELETE FROM assets WHERE key=\(key)"); stats.removed += 1
+        phase("open")
+
+        var work: [PHAsset] = []
+        var albumsOf: [String: [String]] = [:]
+        var filmSet = Set<String>()
+
+        // incremental path
+        if count > 0, let d = metaGet("change_token").flatMap({ Data(base64Encoded: $0) }),
+           let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: d),
+           let changes = try? lib.fetchPersistentChanges(since: token) {
+            stats.incremental = true
+            var changed = Set<String>(), deleted = Set<String>()
+            for c in changes {
+                guard let det = try? c.changeDetails(for: .asset) else { continue }
+                changed.formUnion(det.insertedLocalIdentifiers); changed.formUnion(det.updatedLocalIdentifiers)
+                deleted.formUnion(det.deletedLocalIdentifiers)
+            }
+            let have = known()
+            for id in deleted { if let (key, _) = have[id] { try? index?.remove(key: USearchKey(key)); exec("DELETE FROM assets WHERE key=\(key)"); stats.removed += 1 } }
+            if !changed.isEmpty {
+                let fetched = PHAsset.fetchAssets(withLocalIdentifiers: Array(changed), options: nil)
+                fetched.enumerateObjects { a, _, _ in
+                    guard a.mediaType == .image else { return }
+                    work.append(a)
+                    let cols = PHAssetCollection.fetchAssetCollectionsContaining(a, with: .album, options: nil)
+                    cols.enumerateObjects { c, _, _ in
+                        let t = c.localizedTitle ?? ""
+                        albumsOf[a.localIdentifier, default: []].append(t)
+                        if t.localizedCaseInsensitiveContains("film") { filmSet.insert(a.localIdentifier) }
+                    }
+                }
+            }
+            stats.total = work.count
+            phase("changes")
+        } else {
+            // full diff
+            let cols = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+            cols.enumerateObjects { c, _, _ in
+                let title = c.localizedTitle ?? ""
+                let isFilm = title.localizedCaseInsensitiveContains("film")
+                PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { a, _, _ in
+                    albumsOf[a.localIdentifier, default: []].append(title)
+                    if isFilm { filmSet.insert(a.localIdentifier) }
+                }
+            }
+            let opts = PHFetchOptions()
+            opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            let all = PHAsset.fetchAssets(with: opts)
+            var live = Set<String>(); live.reserveCapacity(all.count)
+            let have = known()
+            all.enumerateObjects { a, _, _ in
+                live.insert(a.localIdentifier)
+                let mod = a.modificationDate?.timeIntervalSince1970 ?? 0
+                if let (_, m) = have[a.localIdentifier], abs(m - mod) < 1 { return }
+                work.append(a)
+            }
+            for (id, (key, _)) in have where !live.contains(id) {
+                try? index?.remove(key: USearchKey(key)); exec("DELETE FROM assets WHERE key=\(key)"); stats.removed += 1
+            }
+            stats.total = all.count
+            phase("diff")
         }
-        exec("BEGIN")
-        var n = 0
-        for a in ordered {
-            n += 1
-            let mod = a.modificationDate?.timeIntervalSince1970 ?? 0
-            if let (_, m) = have[a.localIdentifier], abs(m - mod) < 1 { continue }
-            guard let img = Self.thumbnail(a), let v = Self.featurePrint(img) else { stats.skipped += 1; continue }
-            try upsert(a, albums: albumsOf[a.localIdentifier] ?? [], film: filmSet.contains(a.localIdentifier),
-                       vector: v, replacing: have[a.localIdentifier]?.0)
-            have[a.localIdentifier] = (0, mod)
-            stats.added += 1
-            if stats.added % 250 == 0 { exec("COMMIT"); try index?.save(path: indexPath); exec("BEGIN"); progress?(n, ordered.count) }
+        // skip what we already know is unavailable
+        work = work.filter { !isSkipped($0.localIdentifier, $0.modificationDate?.timeIntervalSince1970 ?? 0) }
+        // likely matches first: Film album, then film-shaped (3:2) frames, then the rest
+        func rank(_ a: PHAsset) -> Int {
+            if filmSet.contains(a.localIdentifier) { return 0 }
+            let r = Double(max(a.pixelWidth, a.pixelHeight)) / Double(max(1, min(a.pixelWidth, a.pixelHeight)))
+            return abs(r - 1.5) < 0.06 ? 1 : 2
         }
-        exec("COMMIT")
-        try index?.save(path: indexPath)
+        work.sort { rank($0) < rank($1) }
+        let priorityCount = work.prefix { rank($0) == 0 }.count
+        let have = known()
+        phase("plan")
+
+        let batch = 96
+        var done = 0
+        var firedPriority = priorityCount == 0
+        while done < work.count {
+            let slice = Array(work[done..<min(work.count, done + batch)])
+            var out = [[Float]?](repeating: nil, count: slice.count)
+            out.withUnsafeMutableBufferPointer { buf in
+                DispatchQueue.concurrentPerform(iterations: slice.count) { i in
+                    if let img = Self.indexThumbnail(slice[i]) { buf[i] = Self.featurePrint(img) }
+                }
+            }
+            phase("thumb+vision")
+            exec("BEGIN")
+            for (a, v) in zip(slice, out) {
+                let mod = a.modificationDate?.timeIntervalSince1970 ?? 0
+                guard let v else { markSkipped(a.localIdentifier, mod); stats.skipped += 1; continue }
+                try upsert(a, albums: albumsOf[a.localIdentifier] ?? [], film: filmSet.contains(a.localIdentifier),
+                           vector: v, replacing: have[a.localIdentifier]?.0)
+                stats.added += 1
+            }
+            exec("COMMIT")
+            phase("write")
+            done += slice.count
+            progress?(done, work.count)
+            if !firedPriority && done >= priorityCount { firedPriority = true; count = (try? index?.count) ?? 0; onPriority?() }
+        }
+        if stats.added > 0 || stats.removed > 0 { try index?.save(path: indexPath) }
+        if let d = try? NSKeyedArchiver.archivedData(withRootObject: tokenAtStart, requiringSecureCoding: true) {
+            metaSet("change_token", d.base64EncodedString())
+        }
         count = (try? index?.count) ?? 0
+        phase("save")
         stats.seconds = Date().timeIntervalSince(t0)
+        Self.note(String(format: "sync %@: %d to read, +%d -%d skipped %d in %.2fs %@", stats.incremental ? "incremental" : "full",
+                         work.count, stats.added, stats.removed, stats.skipped, stats.seconds,
+                         stats.phases.map { "\($0.key)=\(String(format: "%.2f", $0.value))" }.sorted().joined(separator: " ")))
         return stats
     }
 
@@ -290,6 +438,7 @@ final class LabIndex: @unchecked Sendable {
     }
 
     func query(_ positive: CGImage, k: Int = 10) throws -> (LabMatch?, [Candidate]) {
+        openIfExists()
         guard let index, dim > 0 else { return (nil, []) }
         // Vision's orientation hint does not rotate a feature print (measured: all four scored alike),
         // so the pixels are turned before printing.

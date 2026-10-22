@@ -12,7 +12,11 @@ func PHAssetFetch(_ id: String) -> PHAsset? { PHAsset.fetchAssets(withLocalIdent
 enum Entry {
     static func main() {
         let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--lab-match"), args.count > i + 2 {
+        if let i = args.firstIndex(of: "--lab-bench"), args.count > i + 2 {
+            let raw = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
+            Task { await runBench(raw: raw, out: out); exit(0) }
+            RunLoop.main.run()
+        } else if let i = args.firstIndex(of: "--lab-match"), args.count > i + 2 {
             let raw = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
             Task {
                 await runLabMatch(raw: raw, out: out)
@@ -37,6 +41,56 @@ enum Entry {
         CGImageDestinationFinalize(d)
     }
 
+    /// Times the thumbnail paths, a cold build, a warm sync and a query; checks both thumbnail
+    /// paths keep the true lab scan close.
+    static func runBench(raw: URL, out: URL) async {
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: out.appendingPathComponent("log.txt"))
+        let st = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        log("authorization before asking: \(st.rawValue) (3 = authorized)", out)
+        guard await LabIndex.authorize() else { log("denied", out); return }
+        let full = try! RawImage.load(raw)
+        let w = full.downsampled(maxSide: 1200)
+        let a = Develop.analyse(w, filmType: .colorNegative)
+        let pos = Develop.render(w, a, Edit(), crop: .full, look: FilmStock.named("Kodak Gold 200")!.look)!
+        let q = LabIndex.featurePrint(Develop.orient(pos, rotation: 1, mirrored: false)!)!
+        let trueId = "0AB1A3F2-2E29-45EC-9836-2EAA7C2F8BA8/L0/001"
+        if let asset = PHAssetFetch(trueId) {
+            for (name, img) in [("imageio-360", LabIndex.thumbnail(asset)), ("photokit-300", LabIndex.fastThumbnail(asset))] {
+                if let img, let v = LabIndex.featurePrint(img) {
+                    log(String(format: "true pair via %@ (%dx%d): d=%.4f", name, img.width, img.height, LabIndex.cosineDistance(q, v)), out)
+                }
+            }
+        }
+        // per-asset cost of each path over 300 photos, 8-way parallel
+        let o = PHFetchOptions(); o.fetchLimit = 300
+        o.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        let f = PHAsset.fetchAssets(with: o); var assets: [PHAsset] = []
+        f.enumerateObjects { x, _, _ in assets.append(x) }
+        for (name, fn) in [("imageio-360", LabIndex.thumbnail as (PHAsset, CGFloat) -> CGImage?), ("photokit-300", LabIndex.fastThumbnail)] {
+            let t = Date(); var ok = 0; let lock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: assets.count) { i in
+                if let img = fn(assets[i], name == "imageio-360" ? 360 : 300), LabIndex.featurePrint(img) != nil { lock.lock(); ok += 1; lock.unlock() }
+            }
+            log(String(format: "%@: %d/%d ok, %.1f ms/photo (thumb+print, parallel)", name, ok, assets.count, Date().timeIntervalSince(t) * 1000 / Double(assets.count)), out)
+        }
+        // cold build
+        let idx = LabIndex.shared
+        for p in [idx.indexPath, idx.dbPath, idx.dbPath + "-wal", idx.dbPath + "-shm"] { try? FileManager.default.removeItem(atPath: p) }
+        var t = Date()
+        var firstPriority = 0.0
+        let s1 = try! await idx.sync(progress: nil, onPriority: { firstPriority = Date().timeIntervalSince(t) })
+        log(String(format: "COLD build: %d photos, +%d skipped %d in %.1fs (Film album done at %.1fs) %@", s1.total, s1.added, s1.skipped, s1.seconds, firstPriority, s1.phases.description), out)
+        t = Date()
+        let s2 = try! await idx.sync()
+        log(String(format: "WARM sync (%@): %d to read in %.3fs", s2.incremental ? "change token" : "full diff", s2.total, s2.seconds), out)
+        t = Date()
+        let (m, _) = try! idx.query(pos)
+        log(String(format: "query+re-rank: %.0f ms -> %@ conf %.2f", Date().timeIntervalSince(t) * 1000, m?.assetId ?? "none", m?.confidence ?? 0), out)
+        let sz = (try? FileManager.default.attributesOfItem(atPath: idx.indexPath)[.size] as? Int) ?? 0
+        log("index \(idx.count) vectors, usearch \(sz / 1024) KB", out)
+    }
+
     static func runLabMatch(raw: URL, out: URL) async {
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: out.appendingPathComponent("log.txt"))
@@ -44,7 +98,7 @@ enum Entry {
         let idx = LabIndex.shared
         do {
             let t0 = Date()
-            let st = try await idx.sync { n, total in log("  indexed \(n)/\(total)", out) }
+            let st = try await idx.sync()
             log("sync: total \(st.total) added \(st.added) removed \(st.removed) skipped \(st.skipped) in \(String(format: "%.1f", Date().timeIntervalSince(t0)))s; index count \(idx.count)", out)
             let full = try RawImage.load(raw)
             let w = full.downsampled(maxSide: 1200)

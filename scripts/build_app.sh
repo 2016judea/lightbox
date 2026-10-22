@@ -32,7 +32,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LBSanePrefix</key><string>$SANE</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Sign with a stable local identity so macOS keeps Photos/Automation grants across rebuilds
+# (ad-hoc signatures change identity every build). The identity lives in its own keychain with a
+# known password, so signing never raises a prompt; scripts/make_signing_identity.sh creates it.
+KC="$HOME/Library/Lightbox/signing/lightbox.keychain-db"
+if [ -f "$KC" ]; then
+  SHA=$(cat "$HOME/Library/Lightbox/signing/sha1.txt")
+  OLD=$(security list-keychains -d user | tr -d '"' | xargs)
+  security unlock-keychain -p lightbox-local "$KC"
+  security list-keychains -d user -s $OLD "$KC"
+  codesign --force -s "$SHA" "$APP" >/dev/null 2>&1 || echo "signing failed"
+  security list-keychains -d user -s $OLD
+else
+  codesign --force --sign - "$APP" >/dev/null 2>&1
+fi
+codesign -dr - "$APP" 2>&1 | tail -1
 echo "built $ROOT/$APP"
 if [ "${1:-}" = "--install" ]; then
   rm -rf /Applications/Lightbox.app && cp -R "$APP" /Applications/ && echo "installed /Applications/Lightbox.app"
