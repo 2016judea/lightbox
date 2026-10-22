@@ -12,6 +12,7 @@ struct MainView: View {
                 if store.image != nil && !isBusy {
                     EditPane()
                         .frame(width: 290)
+                        .clipped()
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
@@ -19,6 +20,7 @@ struct MainView: View {
             ActionBar().padding(.vertical, 16)
         }
         .overlay(alignment: .top) { ToastView().padding(.top, 54) }
+        .overlay(alignment: .bottomLeading) { LabChip().padding(.leading, 24).padding(.bottom, 24) }
     }
 
     var isBusy: Bool {
@@ -88,8 +90,16 @@ struct CanvasView: View {
             case .previewed, .editing:
                 if store.cropping, let full = store.uncropped {
                     CropOverlay(image: full, initial: store.displayCrop)
+                } else if store.comparing, let img = store.image, let lab = store.labOriented {
+                    CompareView(ours: img, lab: lab)
                 } else if let img = store.image {
                     ImageView(image: img)
+                        .overlay(alignment: .topLeading) {
+                            if store.phase == .previewed {
+                                Text(verbatim: "Preview · \(Store.previewDPI) dpi. Scan for the full picture.")
+                                    .chipStyle().padding(12)
+                            }
+                        }
                 }
             }
         }

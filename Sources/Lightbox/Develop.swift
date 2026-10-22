@@ -30,6 +30,7 @@ struct NRect: Codable, Equatable {
 
 /// The user's adjustments. All sliders are -1...1 with 0 meaning "the auto result".
 struct Edit: Codable, Equatable {
+    init(filmType: FilmType = .colorNegative) { self.filmType = filmType }
     var filmType: FilmType = .colorNegative
     var exposure: Double = 0
     var warmth: Double = 0

@@ -44,6 +44,17 @@ final class Store: ObservableObject {
         didSet { UserDefaults.standard.set(onboarded, forKey: "onboarded") }
     }
 
+    /// 1200 dpi costs 5 s more than 300 (21.7 s vs 16.5 s, measured) and gives a preview that is
+    /// sharp at window size, so a preview can't be mistaken for a blurry scan.
+    static let previewDPI = 1200
+
+    enum LabStatus: Equatable { case idle, searching(String), found(LabMatch), none, denied }
+    @Published var lab: LabStatus = .idle
+    @Published var labImage: CGImage?
+    @Published var comparing = false
+    @Published var labSplit: Double = 0.5
+    private var labTask: Task<Void, Never>?
+
     let scanner = Scanner()
     private var device = ""
     private var working: RawImage?       // downsampled, for live editing
@@ -101,7 +112,7 @@ final class Store: ObservableObject {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("lightbox-preview.pnm")
         phase = .previewing(0)
         do {
-            try await scanner.scan(device: device, settings: .init(dpi: 300, dust: false), to: url) { [weak self] p in
+            try await scanner.scan(device: device, settings: .init(dpi: Store.previewDPI, dust: false), to: url) { [weak self] p in
                 self?.phase = .previewing(p)
             }
             let raw = try await Task.detached { try RawImage.loadPNM(url) }.value
@@ -114,6 +125,7 @@ final class Store: ObservableObject {
             analysis = Develop.analyse(raw, filmType: edit.filmType)
             phase = .previewed
             rerender()
+            findLabScan()
         } catch is CancellationError {
             phase = image == nil ? .ready : .previewed
         } catch {
@@ -143,6 +155,7 @@ final class Store: ObservableObject {
             phase = .editing
             rerender()
             saveSidecar()
+            if case .found = lab {} else { findLabScan() }
         } catch is CancellationError {
             try? FileManager.default.removeItem(at: url)
             phase = .previewed
@@ -169,8 +182,10 @@ final class Store: ObservableObject {
                 edit = s.edit; stock = s.stock
                 analysis = Develop.analyse(w, filmType: edit.filmType)
             }
+            guess = FilmDetect.guess(w)
             phase = .editing
             rerender()
+            findLabScan()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -179,6 +194,7 @@ final class Store: ObservableObject {
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored
         image = nil; uncropped = nil; working = nil; analysis = nil; fullURL = nil; lastSaved = nil
+        labTask?.cancel(); lab = .idle; labImage = nil; comparing = false
         phase = .ready
     }
 
@@ -258,13 +274,72 @@ final class Store: ObservableObject {
         editChanged()
     }
 
+    // MARK: lab scan
+
+    /// In the background: bring the Photos index up to date, then look for this frame's lab scan.
+    func findLabScan() {
+        guard let w = working, let a = analysis else { return }
+        labTask?.cancel()
+        let e0 = Edit(filmType: edit.filmType)          // raw orientation; the matcher tries all four
+        let look = self.look
+        lab = .searching("Looking for your lab scan…")
+        touched("lab")
+        labTask = Task.detached(priority: .utility) { [weak self] in
+            guard await LabIndex.authorize() else { await self?.setLab(.denied, nil); return }
+            let idx = LabIndex.shared
+            do {
+                _ = try await idx.sync { n, total in
+                    Task { @MainActor in self?.lab = .searching("Reading your Photos… \(n * 100 / max(total, 1))%") }
+                }
+                guard let q = Develop.render(w, a, e0, crop: .full, look: look) else { return }
+                let (m, _) = try idx.query(q)
+                if Task.isCancelled { return }
+                if let m {
+                    let img = LabIndex.fullImage(m.assetId, side: 2400)
+                    await self?.setLab(.found(m), img)
+                } else { await self?.setLab(.none, nil) }
+            } catch { await self?.setLab(.none, nil) }
+        }
+    }
+
+    private func setLab(_ s: LabStatus, _ img: CGImage?) {
+        lab = s; labImage = img
+        if case .found(let m) = s {
+            // the lab scan knows which way is up: turn ours to match if he hasn't turned it himself
+            if edit.rotation == 0 && m.rotation != 0 { edit.rotation = m.rotation; rerender() }
+            if phase == .editing { saveSidecar() }
+        }
+    }
+
+    /// Lab scan rotated to sit the same way up as our picture on screen.
+    var labOriented: CGImage? {
+        guard let labImage, case .found(let m) = lab else { return nil }
+        return Develop.orient(labImage, rotation: ((edit.rotation - m.rotation) % 4 + 4) % 4, mirrored: edit.mirrored)
+    }
+
+    /// Sets exposure, warmth and tint so our render lands on the lab scan's colour. Still adjustable.
+    func matchLabColour() async {
+        guard let w = working, let a = analysis, let lab = labOriented else { return }
+        let e = edit, look = self.look
+        toast = "Matching the lab's colour…"
+        let (fit, before, after) = await Task.detached { LabCompare.fit(w, a, e, look: look, lab: lab) }.value
+        edit.exposure = fit.exposure; edit.warmth = fit.warmth; edit.tint = fit.tint
+        editChanged()
+        toast = after < before - 0.5 ? "Matched the lab's colour" : "Already close to the lab's colour"
+    }
+
     // MARK: export
 
-    struct Sidecar: Codable { var edit: Edit; var stock: String; var dpi: Int; var dust: Bool; var scannedAt: Date }
+    struct Sidecar: Codable {
+        var edit: Edit; var stock: String; var dpi: Int; var dust: Bool; var scannedAt: Date
+        var labMatch: LabMatch? = nil
+    }
 
     func saveSidecar() {
         guard let u = fullURL else { return }
-        let s = Sidecar(edit: edit, stock: stock, dpi: dpi, dust: dust, scannedAt: Date())
+        var labMatch: LabMatch? = nil
+        if case .found(let m) = lab { labMatch = m }
+        let s = Sidecar(edit: edit, stock: stock, dpi: dpi, dust: dust, scannedAt: Date(), labMatch: labMatch)
         if let d = try? JSONEncoder().encode(s) {
             try? d.write(to: u.deletingPathExtension().appendingPathExtension("json"))
         }

@@ -3,7 +3,8 @@ import SwiftUI
 /// Two chips: what kind of film (detected from the preview) and which stock (picked once per roll).
 struct FilmChips: View {
     var body: some View {
-        HStack(spacing: 8) {
+        // stacked: side by side they are wider than the 290 pt pane
+        VStack(alignment: .leading, spacing: 8) {
             TypeChip()
             StockChip()
         }
@@ -41,7 +42,9 @@ struct TypeChip: View {
                 Button("Use what Lightbox detected (\(g.type.label))") { store.useDetectedType() }
             }
         } label: {
-            Chip(text: store.edit.filmType.label, detail: store.typeIsDetected ? "detected" : nil)
+            // a Menu label is flattened to one text run, so the "detected" note is part of it
+            Text(store.edit.filmType.label + (store.typeIsDetected ? " · detected" : ""))
+                .font(.system(size: 13, weight: .medium))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

@@ -8,10 +8,13 @@ or **cut**.
 
 | SilverFast feature | what it does | Lightbox | why |
 |---|---|---|---|
-| Prescan / preview | low-res scan to frame the shot | **in this slice** | 300 dpi in ~16 s; the first step of every scan |
+| Prescan / preview | low-res scan to frame the shot | **in this slice** | 1200 dpi in 21.7 s (300 dpi was 16.5 s and looked blurry at window size); labelled "Preview" on screen |
 | Final scan, 300 to 7200 dpi | the real scan | **in this slice** | default 3600 dpi; 7200 is offered but rarely worth it on this optics |
-| NegaFix, 120 Plustek stock profiles | per-stock negative inversion | **in this slice, differently** | we sample the film base off the frame itself and normalise each channel's density, so any stock inverts without a profile. LaserSoft's profile files are proprietary and not redistributable. Per-stock looks: later. |
-| Film type (colour neg / B&W neg / slide) | picks the inversion | **in this slice** | one segmented control |
+| NegaFix, 120 Plustek stock profiles | per-stock negative inversion | **in this slice, differently** | we sample the film base off the frame itself and normalise each channel's density, so any stock inverts without a profile. LaserSoft's profile files are proprietary and not redistributable. Per-stock looks: see the profiles row. |
+| Film type (colour neg / B&W neg / slide) | picks the inversion | **in this slice, automatic** | read off the preview: an orange base (R/B 4.07 measured) means colour negative; a neutral base with no colour in the picture means B&W; black between frames means slide. Shown as an editable chip, "Colour negative · detected". |
+| Film stock | names the film | **in this slice** | his own list from aidanjude.vercel.app/films.js, his notes verbatim, a searchable chip, remembered per roll, default Kodak Gold 200. The scanner can't read the edge print: the 8200i scans 25.4 mm tall (guide v1.6) against a 24 mm frame, and the print sits outside the sprocket holes. |
+| Per-stock profiles (NegaFix's job) | stock-specific inversion | **in this slice** | Gold 200 tuned to his lab scan of the same frame; Redscale keeps its red (no mask neutralisation, one shared density range); CineStill 800T keeps tungsten colour and halation (range anchored at the base, 20% balance pull); Portra 160VC corrects fog and drift (6% black clip, 85% pull, +25% saturation). One test per profile. |
+| Find the lab scan in Photos | not in SilverFast | **in this slice** | background search after every preview/scan; USearch HNSW index over Vision feature prints of his library, compare split, "Match lab colour" |
 | iSRD (infrared dust and scratch removal) | uses the IR channel to repair dust | **in this slice** | the backend reads IR and has its own IR repair pass (`--ir-clean`). One toggle. |
 | SRDx (software dust removal, no IR) | for B&W silver film, where IR fails | later | IR does not see through silver grain, so B&W needs a different method |
 | Auto Adjust (and its Brighter/Darker/Colourcast variants) | one-click levels and colour | **in this slice, as the default** | every scan opens auto-adjusted; there is no button because there is nothing to press |
@@ -26,7 +29,7 @@ or **cut**.
 | Batch scan / multi-frame | scan a whole strip | later | the 8200i holder is moved by hand one notch at a time; the app counts frames now, a "scan next frame" loop comes next |
 | JobManager / Batch Editor | queue edits over many frames | later | copy-paste of edits first |
 | GANE (grain and noise reduction) | grain removal | later | would use Core Image noise reduction |
-| USM (unsharp mask) | sharpening | later | |
+| USM (unsharp mask) | sharpening | **in this slice** | on by default at lab-like strength, one Sharpness slider |
 | AACO (shadow recovery) | lifts dark areas | cut | exposure plus the print curve's toe cover it for a personal scanner |
 | Selective Colour | edit one hue | cut | out of scope for "way less complicated" |
 | Densitometer | read density at a point | cut | a lab tool |

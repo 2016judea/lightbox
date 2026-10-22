@@ -33,6 +33,8 @@ struct CoachTip: Identifiable, Equatable {
                  body: "A quick, small scan so you can check the frame is centred and the right way up. Every setting you change now carries into the full scan."),
         CoachTip(id: "scan", title: "The full scan",
                  body: "Takes about a minute with dust removal. The untouched scan is kept beside the picture, so you can re-edit it later without scanning again."),
+        CoachTip(id: "lab", title: "Your lab scan",
+                 body: "If a lab already scanned this roll, Lightbox finds that picture in your Photos so you can compare and borrow its colour. It reads small thumbnails on this Mac; nothing leaves it. macOS will ask once for Photos access."),
         CoachTip(id: "next", title: "Next frame",
                  body: "Slide the holder until you feel it click into the next notch, then Preview. Your film type and orientation carry over."),
     ].map { ($0.id, $0) })

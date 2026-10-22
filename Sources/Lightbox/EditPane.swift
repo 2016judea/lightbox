@@ -7,7 +7,7 @@ struct EditPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                TipCard(ids: ["preview", "scan", "next"])
+                TipCard(ids: ["preview", "scan", "next", "lab"])
 
                 Section("Film", tips: ["film", "stock"]) {
                     FilmChips()
@@ -43,6 +43,17 @@ struct EditPane: View {
                     if store.edit.crop != nil && !store.cropping {
                         Button("Back to auto crop") { store.resetCrop() }
                             .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                if case .found = store.lab {
+                    Section("Lab scan") {
+                        Toggle(isOn: $store.comparing) { Label("Compare with lab", systemImage: "rectangle.split.2x1") }
+                            .toggleStyle(.switch)
+                        Button { Task { await store.matchLabColour() } } label: {
+                            Label("Match lab colour", systemImage: "eyedropper.halffull")
+                        }
+                        .buttonStyle(QuietButton())
                     }
                 }
 
