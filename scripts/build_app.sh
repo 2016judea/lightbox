@@ -8,7 +8,7 @@ SANE="${LIGHTBOX_SANE:-$HOME/Library/Lightbox/sane}"
 [ -x "$SANE/bin/scanimage" ] || scripts/build_sane.sh
 # a fresh build every time: the Xcode build system has reported "up to date" over edited sources here
 rm -rf .build
-swift build -c release
+swift build -c release --build-system native
 APP=build/Lightbox.app
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Lightbox "$APP/Contents/MacOS/Lightbox"
@@ -27,6 +27,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$(git rev-list --count HEAD 2>/dev/null || echo 1)</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSPhotoLibraryUsageDescription</key><string>Lightbox looks for the lab scan of the frame you just scanned, so you can compare against it.</string>
   <key>NSAppleEventsUsageDescription</key><string>Lightbox adds your scans to the Film album in Photos.</string>
   <key>LBSanePrefix</key><string>$SANE</string>
 </dict></plist>

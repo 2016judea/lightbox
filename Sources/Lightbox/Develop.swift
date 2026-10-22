@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import Accelerate
+import CoreImage
 
 enum FilmType: String, Codable, CaseIterable, Identifiable {
     case colorNegative, bwNegative, slide
@@ -37,6 +38,7 @@ struct Edit: Codable, Equatable {
     var rotation: Int = 0          // quarter turns clockwise
     var mirrored = false
     var crop: NRect? = nil         // nil = the auto-detected picture area
+    var sharpen: Double = 0        // -1 (none) ... 1 (double); 0 = lab-like default
 }
 
 /// What the scan itself says: film base, where the picture is, and each channel's density range.
@@ -162,13 +164,13 @@ enum Develop {
     }
 
     /// Print curve: a sigmoid with a soft toe and shoulder, like paper. `k` is its steepness.
-    static func curveLUT(k: Float, size: Int = 4096) -> [Float] {
+    static func curveLUT(k: Float, black: Float = 0, size: Int = 4096) -> [Float] {
         let f: (Float) -> Float = { 1 / (1 + expf(-k * ($0 - 0.5))) }
         let f0 = f(0), f1 = f(1)
         return (0..<size).map { i in
             let x = -0.25 + 1.5 * Float(i) / Float(size - 1)
             let y = (f(x) - f0) / (f1 - f0)
-            return powf(max(0, min(1, y)), 1 / 1.1)
+            return black + (1 - black) * powf(max(0, min(1, y)), 1 / 1.1)
         }
     }
 
@@ -181,11 +183,11 @@ enum Develop {
         let cw = max(1, min(W - x0, Int(crop.w * Double(W)))), ch = max(1, min(H - y0, Int(crop.h * Double(H))))
 
         let k = Float(5.0 * (1 + 0.5 * e.contrast))
-        let lut = curveLUT(k: k)
+        let lut = curveLUT(k: k, black: look.outputBlack)
         let lutScale = Float(lut.count - 1) / 1.5
-        let expo = Float(e.exposure) * 0.3
+        let expo = Float(e.exposure) * 0.3 + look.exposureBias
         let warm = Float(e.warmth) * 0.08 + look.warmBias
-        let tint = Float(e.tint) * 0.06
+        let tint = Float(e.tint) * 0.06 + look.tintBias
         let neutralW: Float = e.filmType == .colorNegative ? look.neutral : (e.filmType == .slide ? 0.3 : 0)
         // one shared density range keeps the film's own colour (redscale); per-channel removes the mask
         let shared = !look.perChannelLevels && e.filmType != .bwNegative
@@ -254,7 +256,26 @@ enum Develop {
                                 bytesPerRow: cw * 3 * bpc / 8, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                 bitmapInfo: info, provider: provider, decode: nil,
                                 shouldInterpolate: true, intent: .defaultIntent) else { return nil }
-        return orient(img, rotation: e.rotation, mirrored: e.mirrored)
+        let oriented = orient(img, rotation: e.rotation, mirrored: e.mirrored)
+        // Output sharpening, as every lab scanner applies. Radius is set for a 3600 dpi frame and
+        // scaled to the size being rendered, so the preview and the export look alike.
+        let amount = 0.6 * (1 + e.sharpen)
+        guard amount > 0.01, let o = oriented else { return oriented }
+        let radius = max(0.3, 1.4 * Double(cw) / Double(max(1, Int(crop.w * 5184))))
+        return sharpen(o, radius: radius, amount: amount)
+    }
+
+    static let ciContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
+
+    static func sharpen(_ img: CGImage, radius: Double, amount: Double) -> CGImage? {
+        let ci = CIImage(cgImage: img)
+        guard let f = CIFilter(name: "CIUnsharpMask") else { return img }
+        f.setValue(ci, forKey: kCIInputImageKey)
+        f.setValue(radius, forKey: kCIInputRadiusKey)
+        f.setValue(amount, forKey: kCIInputIntensityKey)
+        guard let out = f.outputImage else { return img }
+        let fmt: CIFormat = img.bitsPerComponent == 16 ? .RGBA16 : .RGBA8
+        return ciContext.createCGImage(out, from: ci.extent, format: fmt, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!) ?? img
     }
 
     /// Rotates by quarter turns clockwise and optionally mirrors.

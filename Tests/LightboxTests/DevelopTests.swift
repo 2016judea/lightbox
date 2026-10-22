@@ -1,6 +1,7 @@
 import XCTest
 import ImageIO
 import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 @testable import Lightbox
 
 final class DevelopTests: XCTestCase {
@@ -240,5 +241,52 @@ final class StockProfileTests: XCTestCase {
         XCTAssertEqual(FilmStock.all.count, 12)
         XCTAssertEqual(FilmStock.all.last?.name, "Other colour negative")
         XCTAssertEqual(FilmStock.named("Kodak Ultramax 400")?.note, "Gold’s faster, slightly rowdier cousin. More grain, punchier color")
+    }
+}
+
+/// Baseline: his lab-developed, lab-scanned print of the same Gold 200 frame (Photos, Film + Big Sky 2025,
+/// IMG_7810, 1228x1818). Files live in samples/ and are not in git.
+final class LabBaselineTests: XCTestCase {
+    var samples: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("samples") }
+
+    func load(_ name: String) throws -> CGImage {
+        let u = samples.appendingPathComponent(name)
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: u.path), "no \(name)")
+        let src = CGImageSourceCreateWithURL(u as CFURL, nil)!
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)!
+    }
+
+    func save(_ img: CGImage, _ name: String) {
+        let d = CGImageDestinationCreateWithURL(samples.appendingPathComponent(name) as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(d, img, [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary); CGImageDestinationFinalize(d)
+    }
+
+    func testGoldAgainstLab() throws {
+        let lab = try load("lab_IMG_7810.jpg")
+        let f = samples.appendingPathComponent("full_3600_irclean.pnm")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: f.path))
+        let full = try RawImage.loadPNM(f)
+        let w = full.downsampled(maxSide: 2000)
+        let a = Develop.analyse(w, filmType: .colorNegative)
+        var e = Edit(); e.rotation = 1
+        let gold = FilmStock.named("Kodak Gold 200")!.look
+        let ours = Develop.render(w, a, e, look: gold)!
+        let ourFull = Develop.render(full, a, e, look: gold)!
+        save(ourFull, "ours_gold_full.jpg")
+        print("LAB  ", LabCompare.stats(lab))
+        print("OURS ", LabCompare.stats(ours))
+        let d0 = LabCompare.distance(LabCompare.quantiles(ours), LabCompare.quantiles(lab))
+        print("quantile distance ours->lab", d0)
+        let side = 1818
+        print("sharpness at \(side)px: lab", LabCompare.sharpness(lab, side: side), "ours", LabCompare.sharpness(ourFull, side: side))
+        print("sharpness at 900px: lab", LabCompare.sharpness(lab, side: 900), "ours", LabCompare.sharpness(ourFull, side: 900))
+        print("ours native \(ourFull.width)x\(ourFull.height) lab native \(lab.width)x\(lab.height)")
+        let (fit, before, after) = LabCompare.fit(w, a, e, look: gold, lab: lab)
+        print(String(format: "fit: exposure %.3f warmth %.3f tint %.3f  cost %.2f -> %.2f", fit.exposure, fit.warmth, fit.tint, before, after))
+        let fitted = Develop.render(full, a, fit, look: gold)!
+        save(fitted, "ours_gold_fitted.jpg")
+        print("FIT  ", LabCompare.stats(Develop.render(w, a, fit, look: gold)!))
+        XCTAssertLessThanOrEqual(after, before)
+        XCTAssertLessThan(d0, 12, "Gold 200 out of the box lands within 12/255 of his lab scan's tone and colour")
     }
 }

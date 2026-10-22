@@ -254,7 +254,7 @@ final class Store: ObservableObject {
     }
 
     func resetAdjustments() {
-        edit.exposure = 0; edit.warmth = 0; edit.tint = 0; edit.contrast = 0
+        edit.exposure = 0; edit.warmth = 0; edit.tint = 0; edit.contrast = 0; edit.sharpen = 0
         editChanged()
     }
 

@@ -21,6 +21,7 @@ struct EditPane: View {
                 Section("Light", tips: ["exposure", "contrast"]) {
                     AdjustSlider(id: "exposure", label: "Exposure", symbol: "sun.max", value: $store.edit.exposure)
                     AdjustSlider(id: "contrast", label: "Contrast", symbol: "circle.righthalf.filled", value: $store.edit.contrast)
+                    AdjustSlider(id: "sharpen", label: "Sharpness", symbol: "triangle", value: $store.edit.sharpen)
                 }
 
                 Section("Colour", tips: ["warmth", "tint"]) {
@@ -65,7 +66,7 @@ struct EditPane: View {
                     }
                 }
 
-                if store.edit.exposure != 0 || store.edit.contrast != 0 || store.edit.warmth != 0 || store.edit.tint != 0 {
+                if store.edit.exposure != 0 || store.edit.contrast != 0 || store.edit.warmth != 0 || store.edit.tint != 0 || store.edit.sharpen != 0 {
                     Button("Reset adjustments") { store.resetAdjustments() }
                         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
                 }

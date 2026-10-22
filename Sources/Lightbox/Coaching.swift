@@ -15,6 +15,8 @@ struct CoachTip: Identifiable, Equatable {
                  body: "Brighter or darker overall. The scan already sets its own black and white points, so small moves go a long way."),
         CoachTip(id: "contrast", title: "Contrast",
                  body: "Like choosing a paper grade. Left is soft and flat, right is punchy, with deeper blacks and brighter whites."),
+        CoachTip(id: "sharpen", title: "Sharpness",
+                 body: "Labs sharpen every scan before you see it. Lightbox does the same by default; slide left for the untouched scan, right for crisper edges and grain."),
         CoachTip(id: "warmth", title: "Warmth",
                  body: "Left for cooler and bluer, right for warmer and more golden. Use it when skin or sunlight looks off."),
         CoachTip(id: "tint", title: "Tint",

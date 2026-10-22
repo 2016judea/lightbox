@@ -4,3 +4,4 @@ build/
 samples/*.tiff
 *.pnm
 .DS_Store
+samples/
