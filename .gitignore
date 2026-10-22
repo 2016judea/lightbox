@@ -1,0 +1,6 @@
+vendor/
+build/
+.build/
+samples/*.tiff
+*.pnm
+.DS_Store
