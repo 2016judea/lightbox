@@ -7,8 +7,10 @@ struct CoachTip: Identifiable, Equatable {
     let body: String
 
     static let all: [String: CoachTip] = Dictionary(uniqueKeysWithValues: [
-        CoachTip(id: "film", title: "Tell it what film this is",
-                 body: "Colour negatives are orange and need their mask taken out. B&W negatives just flip. Slides are already positive. Lightbox reads the film's own base colour off the frame, so any stock works."),
+        CoachTip(id: "film", title: "Lightbox read the film",
+                 body: "It looks at the film's base: orange means colour negative, grey with no colour means B&W, black between frames means slide. If it got it wrong, pick the right one here and it sticks for the roll."),
+        CoachTip(id: "stock", title: "Which film is it?",
+                 body: "Pick the stock once and every frame on the roll gets it, written into the picture's details. It's on the box, the canister, or the edge of the film."),
         CoachTip(id: "exposure", title: "Exposure",
                  body: "Brighter or darker overall. The scan already sets its own black and white points, so small moves go a long way."),
         CoachTip(id: "contrast", title: "Contrast",
@@ -48,8 +50,8 @@ struct WalkthroughPage: Identifiable {
               body: "Push the holder into the scanner, label side up, from either side. It clicks into each frame. Give it a gentle push and pull to make sure it has settled."),
         .init(id: 2, symbol: "eye", title: "Preview",
               body: "Press Preview. In about fifteen seconds you'll see the frame, already turned positive and cropped. Check it's centred and the right way up."),
-        .init(id: 3, symbol: "circle.lefthalf.filled", title: "Pick your film",
-              body: "Colour negative, B&W negative or slide. That's the only setting that matters. Lightbox works out the rest from the film itself."),
+        .init(id: 3, symbol: "circle.lefthalf.filled", title: "It reads the film",
+              body: "Lightbox tells colour negative, B&W negative and slide apart from the preview, and inverts each the right way. Tell it the stock once per roll, and it remembers."),
         .init(id: 4, symbol: "camera.aperture", title: "Scan and keep",
               body: "Press Scan for the full picture, about a minute. Then save it to a folder or send it to your Film album in Photos."),
     ]

@@ -9,12 +9,13 @@ struct EditPane: View {
             VStack(alignment: .leading, spacing: 22) {
                 TipCard(ids: ["preview", "scan", "next"])
 
-                Section("Film", tips: ["film"]) {
-                    Picker("", selection: Binding(get: { store.edit.filmType },
-                                                  set: { store.touched("film"); store.setFilmType($0) })) {
-                        ForEach(FilmType.allCases) { Text($0.short).tag($0) }
+                Section("Film", tips: ["film", "stock"]) {
+                    FilmChips()
+                    if let why = store.look.explain {
+                        Label(why, systemImage: "info.circle")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .pickerStyle(.segmented).labelsHidden()
                 }
 
                 Section("Light", tips: ["exposure", "contrast"]) {

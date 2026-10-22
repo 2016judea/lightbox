@@ -156,18 +156,13 @@ struct ReadyView: View {
                    detail: store.frameNumber == 1
                    ? "Dull side of the film down, label side of the holder up. Push until it clicks into a frame."
                    : "Slide the holder until it clicks into the next notch.") {
-            VStack(spacing: 18) {
-                FilmPicker()
-                TextField("Film stock, e.g. Portra 400 (optional)", text: $store.stock)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.07)))
-                    .frame(width: 320)
-                    .multilineTextAlignment(.center)
+            VStack(spacing: 10) {
+                StockChip()
+                Text("Lightbox works out colour, B&W or slide from the preview.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
-        .overlay(alignment: .bottom) { TipCard(ids: ["film", "preview"]).padding(.bottom, 8) }
+        .overlay(alignment: .bottom) { TipCard(ids: ["stock", "preview"]).padding(.bottom, 8) }
     }
 }
 
@@ -191,18 +186,6 @@ struct BusyView: View {
             Text(detail).font(.system(size: 14)).foregroundStyle(.secondary)
             Button("Cancel") { store.cancelScan() }.buttonStyle(QuietButton()).padding(.top, 4)
         }
-    }
-}
-
-struct FilmPicker: View {
-    @EnvironmentObject var store: Store
-    var body: some View {
-        Picker("", selection: Binding(get: { store.edit.filmType }, set: { store.touched("film"); store.setFilmType($0) })) {
-            ForEach(FilmType.allCases) { Text($0.label).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 360)
     }
 }
 

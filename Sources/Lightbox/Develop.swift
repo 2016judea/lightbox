@@ -174,7 +174,7 @@ enum Develop {
 
     /// Turns the raw scan into a positive, cropped and oriented, as 8-bit or 16-bit RGB.
     static func render(_ raw: RawImage, _ a: Analysis, _ e: Edit, crop overrideCrop: NRect? = nil,
-                       sixteenBit: Bool = false) -> CGImage? {
+                       sixteenBit: Bool = false, look: FilmStock.Look = .standard) -> CGImage? {
         let crop = overrideCrop ?? e.crop ?? a.box
         let W = raw.width, H = raw.height
         let x0 = max(0, min(W - 1, Int(crop.x * Double(W)))), y0 = max(0, min(H - 1, Int(crop.y * Double(H))))
@@ -184,15 +184,25 @@ enum Develop {
         let lut = curveLUT(k: k)
         let lutScale = Float(lut.count - 1) / 1.5
         let expo = Float(e.exposure) * 0.3
-        let warm = Float(e.warmth) * 0.08
+        let warm = Float(e.warmth) * 0.08 + look.warmBias
         let tint = Float(e.tint) * 0.06
-        let neutralW: Float = e.filmType == .colorNegative ? 0.6 : (e.filmType == .slide ? 0.3 : 0)
-        let mm = (a.med[0] + a.med[1] + a.med[2]) / 3
-        let offs: [Float] = [neutralW * (mm - a.med[0]) + expo + warm,
-                             neutralW * (mm - a.med[1]) + expo - tint,
-                             neutralW * (mm - a.med[2]) + expo - warm]
+        let neutralW: Float = e.filmType == .colorNegative ? look.neutral : (e.filmType == .slide ? 0.3 : 0)
+        // one shared density range keeps the film's own colour (redscale); per-channel removes the mask
+        let shared = !look.perChannelLevels && e.filmType != .bwNegative
+        let lo: [Float] = look.anchorToBase ? [0, 0, 0, 0] : (shared ? [a.lo[3], a.lo[3], a.lo[3], a.lo[3]] : a.lo)
+        let hi: [Float] = shared ? [a.hi[3], a.hi[3], a.hi[3], a.hi[3]] : a.hi
+        // medians re-expressed in whatever range is in use
+        let med: [Float] = a.med.indices.map { c in
+            let dmed = a.lo[c] + a.med[c] * (a.hi[c] - a.lo[c])     // back to density
+            return (dmed - lo[c]) / (hi[c] - lo[c])
+        }
+        let mm = (med[0] + med[1] + med[2]) / 3
+        let offs: [Float] = [neutralW * (mm - med[0]) + expo + warm,
+                             neutralW * (mm - med[1]) + expo - tint,
+                             neutralW * (mm - med[2]) + expo - warm]
+        let bp = look.blackPoint, bpScale = 1 / (1 - look.blackPoint), sat = look.saturation
         let invBase: [Float] = [1 / a.base[0], 1 / a.base[1], 1 / a.base[2]]
-        let scale: [Float] = (0..<4).map { 1 / (a.hi[$0] - a.lo[$0]) }
+        let scale: [Float] = (0..<4).map { 1 / (hi[$0] - lo[$0]) }
 
         // output buffer in crop orientation first
         var out8 = sixteenBit ? [] : [UInt8](repeating: 0, count: cw * ch * 3)
@@ -212,15 +222,20 @@ enum Develop {
                         var v: (Float, Float, Float)
                         switch ft {
                         case .colorNegative:
-                            v = ((-lg[o] - a.lo[0]) * scale[0], (-lg[o + 1] - a.lo[1]) * scale[1], (-lg[o + 2] - a.lo[2]) * scale[2])
+                            v = ((-lg[o] - lo[0]) * scale[0], (-lg[o + 1] - lo[1]) * scale[1], (-lg[o + 2] - lo[2]) * scale[2])
                         case .bwNegative:
                             let d = -(lg[o] + lg[o + 1] + lg[o + 2]) / 3
-                            let n = (d - a.lo[3]) * scale[3]
+                            let n = (d - lo[3]) * scale[3]
                             v = (n, n, n)
                         case .slide:
-                            v = (1 - (-lg[o] - a.lo[0]) * scale[0], 1 - (-lg[o + 1] - a.lo[1]) * scale[1], 1 - (-lg[o + 2] - a.lo[2]) * scale[2])
+                            v = (1 - (-lg[o] - lo[0]) * scale[0], 1 - (-lg[o + 1] - lo[1]) * scale[1], 1 - (-lg[o + 2] - lo[2]) * scale[2])
                         }
-                        let vs = [v.0 + offs[0], v.1 + offs[1], v.2 + offs[2]]
+                        var vs = [v.0 + offs[0], v.1 + offs[1], v.2 + offs[2]]
+                        if bp > 0 { for c in 0..<3 { vs[c] = (vs[c] - bp) * bpScale } }
+                        if sat != 1 {
+                            let m = (vs[0] + vs[1] + vs[2]) / 3
+                            for c in 0..<3 { vs[c] = m + sat * (vs[c] - m) }
+                        }
                         let d = (yy * cw + xx) * 3
                         for c in 0..<3 {
                             let idx = Int(max(0, min(Float(L.count - 1), (vs[c] + 0.25) * lutScale)))

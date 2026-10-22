@@ -6,6 +6,8 @@ cd "$ROOT"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 SANE="${LIGHTBOX_SANE:-$HOME/Library/Lightbox/sane}"
 [ -x "$SANE/bin/scanimage" ] || scripts/build_sane.sh
+# a fresh build every time: the Xcode build system has reported "up to date" over edited sources here
+rm -rf .build
 swift build -c release
 APP=build/Lightbox.app
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

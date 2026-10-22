@@ -21,7 +21,7 @@ final class Store: ObservableObject {
     @Published var image: CGImage?
     @Published var uncropped: CGImage?        // oriented, full frame, for the crop overlay
     @Published var cropping = false
-    @Published var stock: String = UserDefaults.standard.string(forKey: "stock") ?? "" {
+    @Published var stock: String = UserDefaults.standard.string(forKey: "stock") ?? FilmStock.defaultName {
         didSet { UserDefaults.standard.set(stock, forKey: "stock") }
     }
     @Published var dust: Bool = UserDefaults.standard.object(forKey: "dust") as? Bool ?? true {
@@ -35,6 +35,11 @@ final class Store: ObservableObject {
     @Published var lastSaved: URL?
     @Published var errorMessage: String?
     @Published var activeTip: CoachTip?
+    @Published var guess: FilmGuess?
+    /// He picked the film type by hand on this roll, so detection stops overriding it.
+    @Published var typeLocked: Bool = UserDefaults.standard.bool(forKey: "typeLocked") {
+        didSet { UserDefaults.standard.set(typeLocked, forKey: "typeLocked") }
+    }
     @Published var onboarded: Bool = UserDefaults.standard.bool(forKey: "onboarded") {
         didSet { UserDefaults.standard.set(onboarded, forKey: "onboarded") }
     }
@@ -46,6 +51,14 @@ final class Store: ObservableObject {
     private(set) var analysis: Analysis?
     private var renderTask: Task<Void, Never>?
     var isFull: Bool { phase == .editing }
+    var look: FilmStock.Look { FilmStock.named(stock)?.look ?? .standard }
+
+    /// Picking a stock also says what kind of film it is.
+    func chooseStock(_ name: String) {
+        stock = name
+        if let s = FilmStock.named(name) { typeLocked = false; guess = guess ?? nil; setFilmType(s.type) }
+        rerender(); if phase == .editing { saveSidecar() }
+    }
 
     init() {
         if let f = UserDefaults.standard.string(forKey: "filmType"), let t = FilmType(rawValue: f) { edit.filmType = t }
@@ -95,6 +108,9 @@ final class Store: ObservableObject {
             working = raw
             fullURL = nil
             edit.crop = nil
+            let g = FilmDetect.guess(raw)
+            guess = g
+            if !typeLocked { edit.filmType = g.type }
             analysis = Develop.analyse(raw, filmType: edit.filmType)
             phase = .previewed
             rerender()
@@ -166,7 +182,26 @@ final class Store: ObservableObject {
         phase = .ready
     }
 
+    /// A new roll: frame 1, no stock, detection back on.
+    func newRoll() {
+        stock = ""; typeLocked = false; frameNumber = 0
+        nextFrame()
+    }
+
     // MARK: editing
+
+    /// Called when he picks the type himself; detection then leaves the roll alone.
+    func chooseFilmType(_ t: FilmType) {
+        typeLocked = (t != guess?.type)
+        setFilmType(t)
+    }
+
+    func useDetectedType() {
+        typeLocked = false
+        if let g = guess { setFilmType(g.type) }
+    }
+
+    var typeIsDetected: Bool { !typeLocked && guess?.type == edit.filmType }
 
     func setFilmType(_ t: FilmType) {
         guard t != edit.filmType else { return }
@@ -179,11 +214,12 @@ final class Store: ObservableObject {
     func rerender() {
         guard let w = working, let a = analysis else { return }
         let e = edit
+        let look = self.look
         let wantUncropped = cropping
         renderTask?.cancel()
         renderTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let img = Develop.render(w, a, e)
-            let full = wantUncropped ? Develop.render(w, a, e, crop: .full) : nil
+            let img = Develop.render(w, a, e, look: look)
+            let full = wantUncropped ? Develop.render(w, a, e, crop: .full, look: look) : nil
             if Task.isCancelled { return }
             await self?.apply(img, full, wantUncropped)
         }
@@ -244,12 +280,13 @@ final class Store: ObservableObject {
         }
         let e = edit
         let stock = self.stock
+        let look = self.look
         let ext = format == .jpeg ? "jpg" : "tif"
         let out = fullURL.deletingLastPathComponent().appendingPathComponent(frameStemFrom(fullURL) + "." + ext)
         toast = "Saving…"
         let ok = await Task.detached { () -> Bool in
             guard let full = try? RawImage.load(fullURL),
-                  let img = Develop.render(full, a, e, sixteenBit: format == .tiff),
+                  let img = Develop.render(full, a, e, sixteenBit: format == .tiff, look: look),
                   let dest = CGImageDestinationCreateWithURL(out as CFURL,
                         (format == .jpeg ? UTType.jpeg : UTType.tiff).identifier as CFString, 1, nil)
             else { return false }
