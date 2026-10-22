@@ -6,7 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PIN=bcaa717cda4dab46e432a6cb04a51afc67469cdf
 SRC="$ROOT/vendor/OpticFilm8200i-sane"
-PREFIX="$ROOT/vendor/sane"
+# Outside ~/Desktop: macOS blocks an app from loading binaries there until the user consents.
+PREFIX="${LIGHTBOX_SANE:-$HOME/Library/Lightbox/sane}"
 brew list autoconf automake libtool libusb pkgconf gettext autoconf-archive >/dev/null 2>&1 \
   || brew install autoconf automake libtool libusb pkgconf gettext autoconf-archive
 [ -d "$SRC" ] || git clone https://github.com/cschalle/OpticFilm8200i-sane.git "$SRC"
@@ -19,8 +20,10 @@ BACKENDS="plustek8200i genesys" ./configure --prefix="$PREFIX" --disable-static 
   --disable-preload --with-usb=yes --without-avahi --without-libcurl \
   --without-poppler-glib --without-snmp --disable-locking \
   CPPFLAGS="-I/opt/homebrew/include" LDFLAGS="-L/opt/homebrew/lib" >/dev/null
+make clean >/dev/null 2>&1 || true
 # the doc/ subdir fails on a missing umax html; the libraries and frontend do not need it
-make -j8 -C lib >/dev/null; make -j8 -C sanei >/dev/null; make -j8 -C backend >/dev/null; make -j8 -C frontend >/dev/null
+make -j8 -k >/dev/null 2>&1 || true
+[ -x frontend/scanimage ] || { echo "scanimage did not build"; exit 1; }
 make -C backend install >/dev/null; make -C frontend install >/dev/null; make -C include install >/dev/null || true
 mkdir -p "$PREFIX/etc/sane.d"
 cp backend/plustek8200i.conf "$PREFIX/etc/sane.d/"
