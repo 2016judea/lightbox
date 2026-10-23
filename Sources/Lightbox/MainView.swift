@@ -112,7 +112,7 @@ struct CanvasView: View {
                 BusyView(title: "Scanning at \(store.dpi) dpi",
                          detail: store.dust ? "About a minute, with dust removal" : "About 35 seconds", progress: p)
             case .previewed, .editing:
-                if store.showingVariations && store.phase == .editing {
+                if store.showingVariations && (store.phase == .editing || store.phase == .previewed) {
                     VariationsView()
                 } else if store.cropping, let full = store.uncropped {
                     CropOverlay(image: full, initial: store.displayCrop)
@@ -260,6 +260,11 @@ struct ActionBar: View {
                     // Esc does the same
                     Button("") { store.backToLoad() }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0)
                     Button("Preview again") { Task { await store.preview() } }.buttonStyle(QuietButton())
+                    Button { store.showingVariations.toggle() } label: {
+                        Label(store.showingVariations ? "Back to preview" : "Alternatives", systemImage: "square.grid.3x2")
+                    }
+                    .buttonStyle(QuietButton())
+                    .disabled(store.variations.isEmpty)
                     Button { Task { await store.scan() } } label: {
                         Label("Scan", systemImage: "camera.aperture")
                     }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])

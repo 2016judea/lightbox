@@ -143,6 +143,7 @@ final class Store: ObservableObject {
             phase = .previewed
             rerender()
             findLabScan()
+            generateVariations()
         } catch is CancellationError {
             phase = image == nil ? .ready : .previewed
         } catch {
@@ -195,7 +196,8 @@ final class Store: ObservableObject {
         phase = .editing
         rerender()
         if hasIR { cleanDust(irURL) }
-        generateVariations()
+        // Asked for at Preview already: the pick carries into the scan, so don't ask again.
+        if variations.isEmpty { generateVariations() }
     }
 
     // MARK: alternatives
@@ -281,7 +283,8 @@ final class Store: ObservableObject {
     /// orientation stay. From Keep: the full scan and its edits are already on disk (raw + sidecar),
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
-        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false
+        if showingVariations { showingVariations = false; return }   // Esc closes the grid first
+        variationTask?.cancel(); variations = []; variationState = .idle
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
