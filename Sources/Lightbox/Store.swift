@@ -204,8 +204,11 @@ final class Store: ObservableObject {
 
     /// Renders the frame as it stands, asks Claude for five alternatives, renders each as a tile.
     /// The grid opens straight away with the default tile; the others fill in as they arrive.
+    /// Off in tests, so they never call Claude.
+    nonisolated(unsafe) static var variationsEnabled = true
+
     func generateVariations() {
-        guard let w = working, let a = analysis else { return }
+        guard Store.variationsEnabled, let w = working, let a = analysis else { return }
         variationTask?.cancel()
         let base = edit, look = self.look, stock = self.stock, shown = displayCrop
         let note = FilmStock.named(stock)?.note

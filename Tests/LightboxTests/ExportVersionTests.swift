@@ -15,7 +15,7 @@ final class ExportVersionTests: XCTestCase {
         let samples = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("samples")
         let src = samples.appendingPathComponent("full_3600_irclean.pnm")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: src.path))
-        Store.labSearchEnabled = false
+        Store.labSearchEnabled = false; Store.variationsEnabled = false
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lb-export-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let raw = dir.appendingPathComponent("frame-01-raw.tif")

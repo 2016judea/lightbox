@@ -43,7 +43,7 @@ final class BackToLoadTests: XCTestCase {
         let s = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("samples")
         let src = s.appendingPathComponent("full_3600_irclean.pnm")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: src.path))
-        Store.labSearchEnabled = false
+        Store.labSearchEnabled = false; Store.variationsEnabled = false
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lb-back-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let raw = dir.appendingPathComponent("frame-01-raw.tif")
@@ -60,5 +60,16 @@ final class BackToLoadTests: XCTestCase {
         XCTAssertEqual(st.edit.rotation, 1)
         XCTAssertEqual(st.frameNumber, frame + 1)
         XCTAssertNil(st.image)
+    }
+
+    /// Esc with the alternatives grid open closes the grid and stays on the frame.
+    @MainActor
+    func testEscClosesTheGridFirst() {
+        Store.variationsEnabled = false
+        let st = Store()
+        st.phase = .previewed; st.showingVariations = true
+        st.backToLoad()
+        XCTAssertFalse(st.showingVariations)
+        XCTAssertEqual(st.phase, .previewed)
     }
 }
