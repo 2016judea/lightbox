@@ -112,7 +112,7 @@ struct CanvasView: View {
                 BusyView(title: "Scanning at \(store.dpi) dpi",
                          detail: store.dust ? "About a minute, with dust removal" : "About 35 seconds", progress: p)
             case .previewed, .editing:
-                if store.showingVariations && (store.phase == .editing || store.phase == .previewed) {
+                if store.showingVariations && store.phase == .previewed {
                     VariationsView()
                 } else if store.cropping, let full = store.uncropped {
                     CropOverlay(image: full, initial: store.displayCrop)
@@ -126,6 +126,9 @@ struct CanvasView: View {
                     .overlay(alignment: .topLeading) { Text("100%  ·  double-click to fit").chipStyle().padding(12) }
                 } else if let img = store.image {
                     ImageView(image: img)
+                        .overlay(alignment: .top) {
+                            if store.phase == .previewed && !store.variations.isEmpty { BackToAlternatives().padding(.top, 12) }
+                        }
                         .onTapGesture(count: 2) { if store.phase == .editing { store.toggleZoom() } }
                         .overlay(alignment: .topTrailing) {
                             if let l = store.loupe {
@@ -265,19 +268,16 @@ struct ActionBar: View {
                     }
                     .buttonStyle(QuietButton())
                     .disabled(store.variations.isEmpty)
-                    Button { Task { await store.scan() } } label: {
-                        Label("Scan", systemImage: "camera.aperture")
-                    }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
+                    if !store.showingVariations {
+                        Button { Task { await store.scan() } } label: {
+                            Label(store.chosenName.map { "Scan “\($0)”" } ?? "Scan", systemImage: "camera.aperture")
+                        }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
+                    }
                 }
             case .editing:
                 if store.cropping { cropButtons } else {
                     Button { store.nextFrame() } label: { Label("Next frame", systemImage: "arrow.right") }
                         .buttonStyle(QuietButton())
-                    Button { store.showingVariations.toggle() } label: {
-                        Label(store.showingVariations ? "Back to edit" : "Alternatives", systemImage: "square.grid.3x2")
-                    }
-                    .buttonStyle(QuietButton())
-                    .disabled(store.variations.isEmpty)
                     Button { Task { await store.export(.jpeg) } } label: { Label("Save", systemImage: "square.and.arrow.down") }
                         .buttonStyle(QuietButton())
                     Button { Task { await store.addToPhotos() } } label: { Label("Add to Photos", systemImage: "photo.on.rectangle") }
@@ -327,3 +327,28 @@ extension Notification.Name {
     static let cropDone = Notification.Name("lightbox.cropDone")
     static let cropReset = Notification.Name("lightbox.cropReset")
 }
+
+/// Over the picture once a grid exists: back to the six options, naming the one in use.
+struct BackToAlternatives: View {
+    @EnvironmentObject var store: Store
+    @State private var hover = false
+    var body: some View {
+        Button { store.showingVariations = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.3x2").font(.system(size: 11, weight: .semibold))
+                Text("All alternatives").font(.system(size: 12, weight: .semibold))
+                if let n = store.chosenName {
+                    Text("·  \(n)").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(hover ? 0.75 : 0.55)))
+            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .keyboardShortcut("g", modifiers: [])
+    }
+}
+

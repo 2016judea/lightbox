@@ -66,6 +66,7 @@ final class Store: ObservableObject {
     @Published var variations: [Variation] = []
     @Published var variationState: VariationState = .idle
     @Published var showingVariations = false
+    @Published var chosenVariation: UUID?      // the tile last picked, highlighted when the grid reopens
     private var variationTask: Task<Void, Never>?
     @Published var loupe: CGImage?          // 1:1 crop of the full scan, shown while sharpening
     @Published var zoomed: CGImage?         // the whole picture at 100%, on double-click
@@ -196,8 +197,7 @@ final class Store: ObservableObject {
         phase = .editing
         rerender()
         if hasIR { cleanDust(irURL) }
-        // Asked for at Preview already: the pick carries into the scan, so don't ask again.
-        if variations.isEmpty { generateVariations() }
+        showingVariations = false     // alternatives are a Preview step; the scan is the pick, final
     }
 
     // MARK: alternatives
@@ -216,6 +216,7 @@ final class Store: ObservableObject {
         variations = [Variation(name: "As scanned", why: "No changes.", edit: base,
                                 image: Develop.render(small, a, base, look: look), isDefault: true)]
         variationState = .thinking
+        chosenVariation = nil
         showingVariations = true
         variationTask = Task { [weak self] in
             do {
@@ -240,9 +241,12 @@ final class Store: ObservableObject {
         }
     }
 
+    var chosenName: String? { variations.first { $0.id == chosenVariation }?.name }
+
     /// Takes a tile's settings into the editor, where every slider still works on it.
     func chooseVariation(_ v: Variation) {
-        if !v.isDefault { recordUndo(); edit = v.edit; editChanged() }
+        if v.edit != edit { recordUndo(); edit = v.edit; editChanged() }
+        chosenVariation = v.id
         showingVariations = false
     }
 
@@ -287,7 +291,7 @@ final class Store: ObservableObject {
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
         if showingVariations { showingVariations = false; return }   // Esc closes the grid first
-        variationTask?.cancel(); variations = []; variationState = .idle
+        variationTask?.cancel(); variations = []; variationState = .idle; chosenVariation = nil
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
@@ -297,7 +301,7 @@ final class Store: ObservableObject {
     }
 
     func nextFrame() {
-        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false
+        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false; chosenVariation = nil
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored

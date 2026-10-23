@@ -53,6 +53,7 @@ struct VariationTile: View {
     @EnvironmentObject var store: Store
     let v: Variation
     @State private var hover = false
+    var chosen: Bool { store.chosenVariation == v.id }
 
     var body: some View {
         Button { store.chooseVariation(v) } label: {
@@ -65,10 +66,12 @@ struct VariationTile: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(hover ? 0.9 : (v.isDefault ? 0.35 : 0)), lineWidth: hover ? 2 : 1))
+                    .stroke(chosen ? Color.accentColor : Color.white.opacity(hover ? 0.9 : (v.isDefault ? 0.35 : 0)),
+                            lineWidth: chosen || hover ? 2 : 1))
                 HStack(spacing: 6) {
                     Text(v.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                     if v.isDefault { Text("Default").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    if chosen { Text("In use").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.accentColor) }
                 }
                 Text(v.why).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)

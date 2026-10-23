@@ -69,4 +69,22 @@ final class VariationTests: XCTestCase {
         CGImageDestinationAddImage(dest, ctx.makeImage()!, nil); XCTAssertTrue(CGImageDestinationFinalize(dest))
         print("sheet", out.path)
     }
+
+    /// Picking a tile on Preview takes its settings, closes the grid and names the pick for Scan.
+    @MainActor
+    func testChoosingATileCarriesItsSettings() {
+        Store.variationsEnabled = false
+        let st = Store()
+        st.phase = .previewed
+        var e = Edit(); e.warmth = 0.35; e.exposure = 0.05
+        let v = Variation(name: "Golden evening", why: "Warmer.", edit: e)
+        st.variations = [Variation(name: "As scanned", why: "No changes.", edit: Edit(), isDefault: true), v]
+        st.showingVariations = true
+        st.chooseVariation(v)
+        XCTAssertEqual(st.edit.warmth, 0.35, accuracy: 1e-9)
+        XCTAssertFalse(st.showingVariations)
+        XCTAssertEqual(st.chosenName, "Golden evening")
+        st.undo()
+        XCTAssertEqual(st.edit.warmth, 0, accuracy: 1e-9)
+    }
 }
