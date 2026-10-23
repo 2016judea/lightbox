@@ -132,7 +132,11 @@ enum VariationAI {
         return CGImageDestinationFinalize(dest) ? d as Data : nil
     }
 
-    static func propose(picture: CGImage, current: Edit, stock: String, note: String?) async throws -> [Proposal] {
+    /// Streams Claude's answer and hands back each alternative the moment its JSON object is complete,
+    /// so the first tile appears in a few seconds rather than all five at the end. Junk entries are dropped.
+    @discardableResult
+    static func propose(picture: CGImage, current: Edit, stock: String, note: String?, count: Int = 5,
+                        avoid: [String] = [], onProposal: @escaping @MainActor (Proposal) -> Void = { _ in }) async throws -> [Proposal] {
         guard let key = apiKey else { throw Failure.noKey }
         guard let jpg = jpeg(picture) else { throw Failure.badReply }
         let ctx = """
@@ -141,10 +145,13 @@ enum VariationAI {
         Current settings: exposure \(fmt(current.exposure)), contrast \(fmt(current.contrast)), \
         warmth \(fmt(current.warmth)), tint \(fmt(current.tint)), sharpen \(fmt(current.sharpen)).
         Give absolute values for each variation, not offsets from these.
+        Return exactly \(count) variation\(count == 1 ? "" : "s").\
+        \(avoid.isEmpty ? "" : " Already suggested, so make these different: \(avoid.joined(separator: ", ")).")
         """
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 16000,
+            "stream": true,
             "output_config": ["effort": "medium", "format": ["type": "json_schema", "schema": schema]],
             "fallbacks": "default",
             "system": system,
@@ -162,18 +169,78 @@ enum VariationAI {
         req.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.badReply }
-        guard code == 200 else {
-            let msg = ((obj["error"] as? [String: Any])?["message"] as? String) ?? "unknown error"
-            throw Failure.http(code, msg)
+        if code != 200 {
+            var raw = ""
+            for try await line in bytes.lines { raw += line }
+            let obj = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any]
+            throw Failure.http(code, ((obj?["error"] as? [String: Any])?["message"] as? String) ?? "unknown error")
         }
-        if (obj["stop_reason"] as? String) == "refusal" { throw Failure.refused }
-        let text = (obj["content"] as? [[String: Any]] ?? [])
-            .filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
-        guard let reply = try? JSONDecoder().decode(Reply.self, from: Data(text.utf8)) else { throw Failure.badReply }
-        return Array(reply.variations.prefix(5))
+        var scanner = ObjectScanner()
+        var out: [Proposal] = []
+        var stop: String?
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard line.hasPrefix("data: "),
+                  let ev = (try? JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8))) as? [String: Any] else { continue }
+            switch ev["type"] as? String {
+            case "content_block_delta":
+                guard let d = ev["delta"] as? [String: Any], d["type"] as? String == "text_delta",
+                      let t = d["text"] as? String else { continue }
+                for chunk in scanner.feed(t) {
+                    guard out.count < count, let p = try? JSONDecoder().decode(Proposal.self, from: Data(chunk.utf8)),
+                          usable(p), !out.contains(where: { $0.name.lowercased() == p.name.lowercased() }) else { continue }
+                    out.append(p)
+                    await onProposal(p)
+                }
+            case "message_delta":
+                stop = (ev["delta"] as? [String: Any])?["stop_reason"] as? String ?? stop
+            case "error":
+                let m = ((ev["error"] as? [String: Any])?["message"] as? String) ?? "stream error"
+                throw Failure.http(0, m)
+            default: break
+            }
+        }
+        if stop == "refusal" && out.isEmpty { throw Failure.refused }
+        return out
+    }
+
+    /// A label and reason a person would actually read: real words, sensible length, no model chatter.
+    static func usable(_ p: Proposal) -> Bool {
+        let n = p.name.trimmingCharacters(in: .whitespacesAndNewlines), w = p.why.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (3...40).contains(n.count), (12...160).contains(w.count) else { return false }
+        let junk = ["json", "ignore", "{", "}", "schema", "keep it."]
+        let both = (n + " " + w).lowercased()
+        if junk.contains(where: { both.contains($0) }) { return false }
+        return n.rangeOfCharacter(from: .letters) != nil && w.split(separator: " ").count >= 3
+    }
+
+    /// Pulls complete objects out of {"variations":[{...},{...}…]} as the text streams in.
+    struct ObjectScanner {
+        private var depth = 0, inString = false, escaped = false
+        private var current = ""
+        mutating func feed(_ s: String) -> [String] {
+            var done: [String] = []
+            for ch in s {
+                if depth >= 2 { current.append(ch) }
+                if inString {
+                    if escaped { escaped = false } else if ch == "\\" { escaped = true } else if ch == "\"" { inString = false }
+                    continue
+                }
+                switch ch {
+                case "\"": inString = true
+                case "{", "[":
+                    depth += 1
+                    if depth == 3 && ch == "{" { current = "{" }
+                case "}", "]":
+                    if depth == 3 && ch == "}" { done.append(current) ; current = "" }
+                    depth -= 1
+                default: break
+                }
+            }
+            return done
+        }
     }
 
     private static func fmt(_ v: Double) -> String { String(format: "%.2f", v) }

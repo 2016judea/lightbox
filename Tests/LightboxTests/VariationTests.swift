@@ -28,7 +28,8 @@ final class VariationTests: XCTestCase {
     /// Runs only with LIGHTBOX_LIVE=1 (it costs an API call).
     func testLiveFiveAlternativesOnTheRealFrame() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["LIGHTBOX_LIVE"] == "1")
-        let fx = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let fx = ProcessInfo.processInfo.environment["LIGHTBOX_FRAME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Lightbox/fixtures/gold200-frame.pnm")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: fx.path))
         let w = try RawImage.loadPNM(fx).downsampled(maxSide: 2000)
@@ -38,9 +39,11 @@ final class VariationTests: XCTestCase {
         let pic = try XCTUnwrap(Develop.render(w, a, base, look: look))
         let t0 = Date()
         let props = try await VariationAI.propose(picture: pic, current: base, stock: "Kodak Gold 200",
-                                                  note: FilmStock.named("Kodak Gold 200")?.note)
+                                                  note: FilmStock.named("Kodak Gold 200")?.note) { p in
+            print(String(format: "tile at %.1fs: ", Date().timeIntervalSince(t0)) + p.name)
+        }
         print("claude took", Date().timeIntervalSince(t0), "s")
-        XCTAssertEqual(props.count, 5)
+        print("count", props.count)
         let shown = Develop.toDisplay(a.box, rotation: 0, mirrored: false)
         let small = w.downsampled(maxSide: 600)
         var tiles: [CGImage] = []
@@ -51,6 +54,7 @@ final class VariationTests: XCTestCase {
             alts.append(try XCTUnwrap(Develop.render(small, a, VariationAI.edit(from: p, base: base, shownCrop: shown), look: look)))
         }
         let def = try XCTUnwrap(Develop.render(small, a, base, look: look))
+        XCTAssertEqual(props.count, 5)
         tiles = [alts[0], alts[1], def, alts[2], alts[3], alts[4]]
         // 3 x 2 sheet, each tile fitted into a 600 x 600 cell
         let cell = 600, W = cell * 3, H = cell * 2
@@ -110,4 +114,24 @@ final class VariationTests: XCTestCase {
         XCTAssertEqual(st.edit.exposure, 0.2, accuracy: 1e-9)
         XCTAssertEqual(st.edit.warmth, 0.3, accuracy: 1e-9)
     }
+
+    func testScannerPullsObjectsOutAsTheyStream() {
+        var sc = VariationAI.ObjectScanner()
+        let json = #"{"variations":[{"name":"A b","why":"x {y} \"z\"","crop":{"x":0,"y":0,"w":1,"h":1}},{"name":"C"}]}"#
+        var got: [String] = []
+        for ch in json { got += sc.feed(String(ch)) }       // one character at a time, as a stream would
+        XCTAssertEqual(got.count, 2)
+        XCTAssertTrue(got[0].hasPrefix("{\"name\":\"A b\"") && got[0].hasSuffix("}}"))
+        XCTAssertEqual(got[1], #"{"name":"C"}"#)
+    }
+
+    func testJunkLabelsAreDropped() {
+        func p(_ n: String, _ w: String) -> VariationAI.Proposal {
+            .init(name: n, why: w, exposure: 0, contrast: 0, warmth: 0, tint: 0, sharpen: 0, crop: nil)
+        }
+        XCTAssertFalse(VariationAI.usable(p("x", "x")))
+        XCTAssertFalse(VariationAI.usable(p("Golden steps", "Warmer print leans into the glow.Keep it.JSON fix ignore")))
+        XCTAssertTrue(VariationAI.usable(p("Cool marble", "Cooler, darker, punchier print holds white dress and stone detail.")))
+    }
 }
+

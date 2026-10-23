@@ -212,14 +212,19 @@ final class Store: ObservableObject {
 
     // MARK: alternatives
 
-    /// Renders the frame as it stands, asks Claude for five alternatives, renders each as a tile.
-    /// The grid opens straight away with the default tile; the others fill in as they arrive.
     /// Off in tests, so they never call Claude.
     nonisolated(unsafe) static var variationsEnabled = true
 
+    /// Earlier sets for this frame, newest last, so "Five more" never loses a set he liked.
+    @Published var previousSets: [[Variation]] = []
+
+    /// Renders the frame as it stands, asks Claude for five alternatives, renders each as a tile the
+    /// moment it streams in. If any come back unusable, asks once more for the missing ones.
     func generateVariations() {
         guard Store.variationsEnabled, let w = working, let a = analysis else { return }
         variationTask?.cancel()
+        let alts = variations.filter { !$0.isDefault }
+        if !alts.isEmpty { previousSets.append(variations) }
         let base = edit, look = self.look, stock = self.stock, shown = displayCrop
         let note = FilmStock.named(stock)?.note
         let small = w.downsampled(maxSide: 900)
@@ -229,26 +234,36 @@ final class Store: ObservableObject {
         picked = []
         showingVariations = true
         variationTask = Task { [weak self] in
+            let add: @MainActor (VariationAI.Proposal) -> Void = { p in
+                let e = VariationAI.edit(from: p, base: base, shownCrop: shown)
+                let img = Develop.render(small, a, e, look: look)
+                self?.variations.append(Variation(name: p.name, why: p.why, edit: e, image: img))
+            }
             do {
                 let pic = await Task.detached { Develop.render(w, a, base, look: look) }.value
                 guard let pic else { throw VariationAI.Failure.badReply }
-                let props = try await VariationAI.propose(picture: pic, current: base, stock: stock, note: note)
+                var got = try await VariationAI.propose(picture: pic, current: base, stock: stock, note: note, onProposal: add)
+                if got.count < 5, !Task.isCancelled {
+                    got += try await VariationAI.propose(picture: pic, current: base, stock: stock, note: note,
+                                                         count: 5 - got.count, avoid: got.map(\.name), onProposal: add)
+                }
                 if Task.isCancelled { return }
-                let made: [Variation] = await Task.detached {
-                    props.map { p in
-                        let e = VariationAI.edit(from: p, base: base, shownCrop: shown)
-                        return Variation(name: p.name, why: p.why, edit: e, image: Develop.render(small, a, e, look: look))
-                    }
-                }.value
-                if Task.isCancelled { return }
-                self?.variations.append(contentsOf: made)
-                self?.variationState = .ready
+                self?.variationState = got.isEmpty ? .failed(VariationAI.Failure.badReply.localizedDescription) : .ready
             } catch is CancellationError {
             } catch {
                 if Task.isCancelled { return }
-                self?.variationState = .failed(error.localizedDescription)
+                let have = (self?.variations.count ?? 1) > 1
+                self?.variationState = have ? .ready : .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// Back to the set before; pressing again cycles through every set made for this frame.
+    func showPreviousSet() {
+        guard let prev = previousSets.popLast() else { return }
+        variationTask?.cancel()
+        if variations.contains(where: { !$0.isDefault }) { previousSets.insert(variations, at: 0) }   // cycle, never drop
+        variations = prev; picked = []; variationState = .ready
     }
 
     /// One pick: its name. Several: how many. None: nil.
@@ -342,7 +357,7 @@ final class Store: ObservableObject {
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
         if showingVariations { showingVariations = false; return }   // Esc closes the grid first
-        variationTask?.cancel(); variations = []; variationState = .idle; picked = []; picks = []; activePick = 0
+        variationTask?.cancel(); variations = []; previousSets = []; variationState = .idle; picked = []; picks = []; activePick = 0
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
@@ -352,7 +367,7 @@ final class Store: ObservableObject {
     }
 
     func nextFrame() {
-        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false; picked = []; picks = []; activePick = 0
+        variationTask?.cancel(); variations = []; previousSets = []; variationState = .idle; showingVariations = false; picked = []; picks = []; activePick = 0
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored

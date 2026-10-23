@@ -28,7 +28,8 @@ struct VariationsView: View {
             switch store.variationState {
             case .thinking:
                 ProgressView().controlSize(.small)
-                Text("Claude is looking at your frame…").foregroundStyle(.secondary)
+                Text(store.variations.count > 1 ? "Claude is suggesting more…" : "Claude is looking at your frame…")
+                    .foregroundStyle(.secondary)
             case .failed(let m):
                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                 Text(m).foregroundStyle(.secondary).lineLimit(2)
@@ -36,6 +37,9 @@ struct VariationsView: View {
             default:
                 Text("Pick one or more. Scan makes them all.").foregroundStyle(.secondary)
                 Button("Five more") { store.generateVariations() }.buttonStyle(.link)
+                if !store.previousSets.isEmpty {
+                    Button("Previous set") { store.showPreviousSet() }.buttonStyle(.link)
+                }
             }
             Spacer()
             Button { store.showingVariations = false } label: { Text(store.picked.isEmpty ? "Close" : "Done") }
