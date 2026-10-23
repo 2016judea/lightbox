@@ -81,6 +81,13 @@ struct FilmStock: Identifiable, Hashable {
         .init(name: "CineStill 800T", note: "tungsten-balanced for artificial light… think neon, bars, diners, streetlights, gas stations",
               type: .colorNegative, look: .init(neutral: 0.2, anchorToBase: true,
                                                 explain: "CineStill 800T: keeping the tungsten colour and the red glow around lights.")),
+        // Added at his request 2026-10-23 for the roll he was loading; not on films.js, and he has
+        // written no note for it, so it has none. Kodak Vision3 250D with the remjet removed (PetaPixel
+        // 2026-02-17, Focus Nordic): C-41, daylight-balanced, soft contrast, low saturation, halation.
+        // Daylight, so the standard mask removal and balance pull (not 800T's tungsten handling);
+        // slightly softer and less saturated by default; nothing local, so the glow is kept.
+        .init(name: "Candido 400", note: nil, type: .colorNegative,
+              look: .init(contrastBias: 0.9, saturation: 0.9, explain: "Candido 400: keeping the glow around bright lights.")),
         .init(name: "Other colour negative", note: nil, type: .colorNegative),
     ]
 

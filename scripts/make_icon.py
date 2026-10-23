@@ -1,4 +1,4 @@
-# Wraps the chosen art (assets/icon_source_lightleak.png, unchanged) in the macOS icon grid:
+# Wraps the chosen art (assets/icon_source_loupe.png, unchanged) in the macOS icon grid:
 # 824 px squircle inside a 1024 canvas, continuous corners, soft drop shadow. Writes icon_1024.png.
 import sys, numpy as np
 from PIL import Image, ImageFilter

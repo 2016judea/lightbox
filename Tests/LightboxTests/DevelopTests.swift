@@ -238,7 +238,10 @@ final class StockProfileTests: XCTestCase {
 
     func testStockListIsHisInOrder() {
         XCTAssertEqual(FilmStock.all.first?.name, "Kodak Gold 200")
-        XCTAssertEqual(FilmStock.all.count, 12)
+        XCTAssertEqual(FilmStock.all.count, 13)
+        let names = FilmStock.all.map(\.name)
+        XCTAssertEqual(Array(names.suffix(3)), ["CineStill 800T", "Candido 400", "Other colour negative"])
+        XCTAssertNil(FilmStock.named("Candido 400")?.note, "no note: he hasn't written one")
         XCTAssertEqual(FilmStock.all.last?.name, "Other colour negative")
         XCTAssertEqual(FilmStock.named("Kodak Ultramax 400")?.note, "Gold’s faster, slightly rowdier cousin. More grain, punchier color")
     }
@@ -288,5 +291,27 @@ final class LabBaselineTests: XCTestCase {
         print("FIT  ", LabCompare.stats(Develop.render(w, a, fit, look: gold)!))
         XCTAssertLessThanOrEqual(after, before)
         XCTAssertLessThan(d0, 7, "Gold 200 out of the box lands within 7/255 of his lab scan's tone and colour")
+    }
+}
+
+final class CandidoProfileTests: XCTestCase {
+    /// Candido 400: daylight balance (standard pull, unlike 800T), softer and less saturated than standard.
+    func testCandidoIsSofterAndKeepsDaylightBalance() throws {
+        let s = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("samples")
+        let p = s.appendingPathComponent("preview_app.pnm")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: p.path))
+        let r = try RawImage.loadPNM(p)
+        let a = Develop.analyse(r, filmType: .colorNegative)
+        let look = FilmStock.named("Candido 400")!.look
+        XCTAssertEqual(look.neutral, FilmStock.Look.standard.neutral, "daylight: standard balance pull")
+        XCTAssertFalse(look.anchorToBase)
+        func chroma(_ img: CGImage) -> Double {
+            let px = LabCompare.pixels(img); var t = 0.0
+            for i in px[0].indices { let v = [px[0][i], px[1][i], px[2][i]]; t += v.max()! - v.min()! }
+            return t / Double(px[0].count)
+        }
+        let std = Develop.render(r, a, Edit())!, cand = Develop.render(r, a, Edit(), look: look)!
+        XCTAssertLessThan(chroma(cand), chroma(std))
+        XCTAssertLessThan(LabCompare.sharpness(cand, side: 400), LabCompare.sharpness(std, side: 400) * 1.0001)
     }
 }
