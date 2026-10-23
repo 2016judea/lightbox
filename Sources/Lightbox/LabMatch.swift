@@ -437,6 +437,9 @@ final class LabIndex: @unchecked Sendable {
         return den > 0 ? num / den : 0
     }
 
+    /// For the false-positive check: the same query with some assets removed from the library.
+    var excluded: Set<String> = []
+
     func query(_ positive: CGImage, k: Int = 10) throws -> (LabMatch?, [Candidate]) {
         openIfExists()
         guard let index, dim > 0 else { return (nil, []) }
@@ -448,7 +451,7 @@ final class LabIndex: @unchecked Sendable {
                   let q = Self.featurePrint(turned) else { continue }
             let (keys, _) = try index.search(vector: q, count: k)
             for key in keys {
-                guard let (id, v, albums, created) = vector(key: Int64(key)) else { continue }
+                guard let (id, v, albums, created) = vector(key: Int64(key)), !excluded.contains(id) else { continue }
                 let d = Self.cosineDistance(q, v)       // exact re-rank
                 if best[id].map({ d < $0.distance }) ?? true {
                     best[id] = Candidate(id: id, distance: d, rotation: r, albums: albums, created: created)

@@ -3,6 +3,7 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 import Photos
+import CoreImage
 
 func PHAssetFetch(_ id: String) -> PHAsset? { PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject }
 
@@ -89,6 +90,47 @@ enum Entry {
         log(String(format: "query+re-rank: %.0f ms -> %@ conf %.2f", Date().timeIntervalSince(t) * 1000, m?.assetId ?? "none", m?.confidence ?? 0), out)
         let sz = (try? FileManager.default.attributesOfItem(atPath: idx.indexPath)[.size] as? Int) ?? 0
         log("index \(idx.count) vectors, usearch \(sz / 1024) KB", out)
+        falsePositives(out)
+    }
+
+    /// 30 Film-album photos, each degraded the way a lab scan differs from ours (8% crop, a quarter
+    /// turn, a colour cast), queried twice: with itself in the library (should match) and with
+    /// itself removed (the best impostor must be rejected).
+    static func falsePositives(_ out: URL) {
+        let idx = LabIndex.shared
+        let cols = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        var film: PHAssetCollection?
+        cols.enumerateObjects { c, _, stop in if c.localizedTitle == "Film" { film = c; stop.pointee = true } }
+        guard let film else { log("no Film album", out); return }
+        let assets = PHAsset.fetchAssets(in: film, options: nil)
+        var hits = 0, fp = 0, n = 0
+        var impostorD: [Double] = [], selfD: [Double] = []
+        for i in stride(from: 0, to: assets.count, by: max(1, assets.count / 30)) {
+            let a = assets.object(at: i)
+            guard let big = LabIndex.thumbnail(a, side: 900) else { continue }
+            let w = big.width, h = big.height
+            guard let cropped = big.cropping(to: CGRect(x: w / 25, y: h / 25, width: w * 23 / 25, height: h * 23 / 25)),
+                  let turned = Develop.orient(cropped, rotation: 1, mirrored: false) else { continue }
+            let ci = CIImage(cgImage: turned).applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 1.08, y: 0, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: 0.9, w: 0)])
+            guard let q = Develop.ciContext.createCGImage(ci, from: ci.extent) else { continue }
+            n += 1
+            idx.excluded = []
+            if let (m, r) = try? idx.query(q) {
+                if m?.assetId == a.localIdentifier { hits += 1 }
+                if let d = r.first(where: { $0.id == a.localIdentifier })?.distance { selfD.append(d) }
+            }
+            idx.excluded = [a.localIdentifier]
+            if let (m, r) = try? idx.query(q) {
+                if m != nil { fp += 1; log("FALSE POSITIVE for \(a.localIdentifier): \(m!.assetId) d=\(m!.distance) s=\(m!.structure)", out) }
+                if let d = r.first?.distance { impostorD.append(d) }
+            }
+        }
+        idx.excluded = []
+        func q(_ v: [Double], _ p: Double) -> Double { let s = v.sorted(); return s.isEmpty ? .nan : s[min(s.count - 1, Int(Double(s.count - 1) * p))] }
+        log(String(format: "false-positive check, %d film frames: found itself %d/%d; impostor accepted %d/%d", n, hits, n, fp, n), out)
+        log(String(format: "  self distance median %.3f max %.3f; best impostor min %.3f median %.3f (gate %.2f)",
+                    q(selfD, 0.5), q(selfD, 1), q(impostorD, 0), q(impostorD, 0.5), LabIndex.maxDistance), out)
     }
 
     static func runLabMatch(raw: URL, out: URL) async {
