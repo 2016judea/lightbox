@@ -11,7 +11,7 @@ struct MainView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if store.image != nil && !isBusy {
                     EditPane()
-                        .frame(width: 290)
+                        .frame(width: 420)
                         .clipped()
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }

@@ -11,7 +11,7 @@ struct LightboxApp: App {
         WindowGroup("Lightbox") {
             RootView()
                 .environmentObject(store)
-                .frame(minWidth: 980, minHeight: 640)
+                .frame(minWidth: 1100, minHeight: 640)
                 .preferredColorScheme(.dark)
                 .task {
                     if let u = Entry.openOnLaunch { await store.open(u); return }
@@ -19,7 +19,7 @@ struct LightboxApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1280, height: 820)
+        .defaultSize(width: 1440, height: 860)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Scan…") { openPanel() }.keyboardShortcut("o")
