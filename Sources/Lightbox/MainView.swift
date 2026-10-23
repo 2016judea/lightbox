@@ -112,7 +112,9 @@ struct CanvasView: View {
                 BusyView(title: "Scanning at \(store.dpi) dpi",
                          detail: store.dust ? "About a minute, with dust removal" : "About 35 seconds", progress: p)
             case .previewed, .editing:
-                if store.cropping, let full = store.uncropped {
+                if store.showingVariations && store.phase == .editing {
+                    VariationsView()
+                } else if store.cropping, let full = store.uncropped {
                     CropOverlay(image: full, initial: store.displayCrop)
                 } else if store.comparing, let img = store.image, let lab = store.labOriented {
                     CompareView(ours: img, lab: lab)
@@ -266,6 +268,11 @@ struct ActionBar: View {
                 if store.cropping { cropButtons } else {
                     Button { store.nextFrame() } label: { Label("Next frame", systemImage: "arrow.right") }
                         .buttonStyle(QuietButton())
+                    Button { store.showingVariations.toggle() } label: {
+                        Label(store.showingVariations ? "Back to edit" : "Alternatives", systemImage: "square.grid.3x2")
+                    }
+                    .buttonStyle(QuietButton())
+                    .disabled(store.variations.isEmpty)
                     Button { Task { await store.export(.jpeg) } } label: { Label("Save", systemImage: "square.and.arrow.down") }
                         .buttonStyle(QuietButton())
                     Button { Task { await store.addToPhotos() } } label: { Label("Add to Photos", systemImage: "photo.on.rectangle") }

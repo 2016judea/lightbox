@@ -61,6 +61,12 @@ final class Store: ObservableObject {
     private var fullClean: RawImage?     // the same with dust removed from the infrared plane
     private var workingClean: RawImage?
     @Published var hasIR = false
+    // Alternatives: the default plus five Claude proposes, shown as a grid after each full scan.
+    enum VariationState: Equatable { case idle, thinking, ready, failed(String) }
+    @Published var variations: [Variation] = []
+    @Published var variationState: VariationState = .idle
+    @Published var showingVariations = false
+    private var variationTask: Task<Void, Never>?
     @Published var loupe: CGImage?          // 1:1 crop of the full scan, shown while sharpening
     @Published var zoomed: CGImage?         // the whole picture at 100%, on double-click
     private var focus: (x: Double, y: Double)?
@@ -189,6 +195,50 @@ final class Store: ObservableObject {
         phase = .editing
         rerender()
         if hasIR { cleanDust(irURL) }
+        generateVariations()
+    }
+
+    // MARK: alternatives
+
+    /// Renders the frame as it stands, asks Claude for five alternatives, renders each as a tile.
+    /// The grid opens straight away with the default tile; the others fill in as they arrive.
+    func generateVariations() {
+        guard let w = working, let a = analysis else { return }
+        variationTask?.cancel()
+        let base = edit, look = self.look, stock = self.stock, shown = displayCrop
+        let note = FilmStock.named(stock)?.note
+        let small = w.downsampled(maxSide: 900)
+        variations = [Variation(name: "As scanned", why: "No changes.", edit: base,
+                                image: Develop.render(small, a, base, look: look), isDefault: true)]
+        variationState = .thinking
+        showingVariations = true
+        variationTask = Task { [weak self] in
+            do {
+                let pic = await Task.detached { Develop.render(w, a, base, look: look) }.value
+                guard let pic else { throw VariationAI.Failure.badReply }
+                let props = try await VariationAI.propose(picture: pic, current: base, stock: stock, note: note)
+                if Task.isCancelled { return }
+                let made: [Variation] = await Task.detached {
+                    props.map { p in
+                        let e = VariationAI.edit(from: p, base: base, shownCrop: shown)
+                        return Variation(name: p.name, why: p.why, edit: e, image: Develop.render(small, a, e, look: look))
+                    }
+                }.value
+                if Task.isCancelled { return }
+                self?.variations.append(contentsOf: made)
+                self?.variationState = .ready
+            } catch is CancellationError {
+            } catch {
+                if Task.isCancelled { return }
+                self?.variationState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Takes a tile's settings into the editor, where every slider still works on it.
+    func chooseVariation(_ v: Variation) {
+        if !v.isDefault { recordUndo(); edit = v.edit; editChanged() }
+        showingVariations = false
     }
 
     /// Finds and removes dust off the main thread; the toggle shows a spinner meanwhile.
@@ -231,6 +281,7 @@ final class Store: ObservableObject {
     /// orientation stay. From Keep: the full scan and its edits are already on disk (raw + sidecar),
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
+        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
@@ -240,6 +291,7 @@ final class Store: ObservableObject {
     }
 
     func nextFrame() {
+        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored
