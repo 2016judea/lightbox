@@ -54,7 +54,7 @@ final class LabIndex: @unchecked Sendable {
     var dbPath: String { dir.appendingPathComponent("labindex.sqlite").path }
 
     static var visionRevision: Int { VNGenerateImageFeaturePrintRequest.currentRevision }
-    static var thumbMethod: String { useFastThumbs ? "photokit-300" : "imageio-360" }
+    static let thumbMethod = "imageio-360-normalized-v3"
 
     // MARK: feature prints
 
@@ -212,8 +212,6 @@ final class LabIndex: @unchecked Sendable {
         else { try? line.write(to: log, atomically: true, encoding: .utf8) }
     }
 
-    /// Thumbnail path used for indexing; picked by `--lab-bench` (see README).
-    static var useFastThumbs = true
 
     static let caching = PHCachingImageManager()
 
@@ -231,8 +229,30 @@ final class LabIndex: @unchecked Sendable {
         return out
     }
 
+    /// Index path: ImageIO thumbnail from the local original (true pair 0.103 on the bench) or,
+    /// for iCloud-only photos with no local original, PhotoKit's best local image at the same size.
+    /// PhotoKit's fast thumbnails printed 0.251 for the true pair and are not used.
     static func indexThumbnail(_ a: PHAsset) -> CGImage? {
-        useFastThumbs ? (fastThumbnail(a) ?? thumbnail(a)) : (thumbnail(a) ?? fastThumbnail(a))
+        (thumbnail(a) ?? fastThumbnail(a, side: 360)).flatMap(normalized)
+    }
+
+    /// The ONE path every image takes before a feature print, query and index alike: JPEG at 0.9,
+    /// then an ImageIO thumbnail at 360 px. Same size, colour space and encoding on both sides.
+    static func normalized(_ img: CGImage) -> CGImage? {
+        let data = NSMutableData()
+        guard let d = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(d, img, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        guard CGImageDestinationFinalize(d), let src = CGImageSourceCreateWithData(data, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 360,
+            kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+    }
+
+    /// Lightbox's own exports (frame-01.jpg, "frame-01 v2.jpg") land in his Film album; they are
+    /// our scans, never the lab's, so they are never a match.
+    static func isOurs(_ a: PHAsset) -> Bool {
+        let name = PHAssetResource.assetResources(for: a).first?.originalFilename ?? ""
+        return name.range(of: #"^frame-\d+( v\d+)?\.(jpg|jpeg|tif|tiff)$"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private func isSkipped(_ id: String, _ mod: Double) -> Bool {
@@ -360,8 +380,12 @@ final class LabIndex: @unchecked Sendable {
             stats.total = all.count
             phase("diff")
         }
-        // skip what we already know is unavailable
+        // skip what we already know is unavailable, and Lightbox's own exports
         work = work.filter { !isSkipped($0.localIdentifier, $0.modificationDate?.timeIntervalSince1970 ?? 0) }
+        let ours = work.filter { Self.isOurs($0) }
+        for a in ours { markSkipped(a.localIdentifier, a.modificationDate?.timeIntervalSince1970 ?? 0) }
+        if !ours.isEmpty { let o = Set(ours.map(\.localIdentifier)); work.removeAll { o.contains($0.localIdentifier) } }
+        stats.skipped += ours.count
         // likely matches first: Film album, then film-shaped (3:2) frames, then the rest
         func rank(_ a: PHAsset) -> Int {
             if filmSet.contains(a.localIdentifier) { return 0 }
@@ -440,38 +464,147 @@ final class LabIndex: @unchecked Sendable {
     /// For the false-positive check: the same query with some assets removed from the library.
     var excluded: Set<String> = []
 
-    func query(_ positive: CGImage, k: Int = 10) throws -> (LabMatch?, [Candidate]) {
+    struct Scored { var id: String; var distance: Double; var ncc: Double; var rotation: Int; var albums: String?; var created: Double }
+    private(set) var lastScored: [Scored] = []
+
+    // Gates, from the bench (2026-10-22, 30 Film frames + the Gold 200 frame): his real scan vs its
+    // lab scan correlates 0.908 (runner-up 0.313); a frame vs a degraded copy of itself 0.97-0.999;
+    // unrelated frames <= 0.79; near-identical neighbouring frames (bursts) 0.85-0.96, which no gate
+    // separates from his real pair, so a clear lead over the runner-up is required too.
+    static var minNCC = 0.85
+    static var minMargin = 0.08
+    static var duplicateNCC = 0.98
+    static var maxCandidateDistance = 0.35
+
+    /// Luminance correlation at 48 px, maximised over small crops and shifts of the candidate,
+    /// because lab scans are cropped and framed a little differently from ours.
+    static func alignedNCC(_ ours: CGImage, _ cand: CGImage) -> Double { alignedNCC(ours, cand, size: 48, fine: false) }
+
+    static func alignedNCC(_ ours: CGImage, _ cand: CGImage, size S: Int, fine: Bool) -> Double {
+        func gray(_ img: CGImage, _ r: CGRect?, _ s: Int) -> [Double] {
+            var px = [UInt8](repeating: 0, count: s * s)
+            let ctx = CGContext(data: &px, width: s, height: s, bitsPerComponent: 8, bytesPerRow: s,
+                                space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+            ctx.interpolationQuality = .medium
+            let src = r.flatMap { img.cropping(to: $0) } ?? img
+            ctx.draw(src, in: CGRect(x: 0, y: 0, width: s, height: s))
+            let v = px.map(Double.init); let m = v.reduce(0, +) / Double(v.count)
+            let c = v.map { $0 - m }; let n = sqrt(c.reduce(0) { $0 + $1 * $1 })
+            return n > 0 ? c.map { $0 / n } : c
+        }
+        let W = Double(ours.width), H = Double(ours.height)
+        let a = gray(ours, CGRect(x: W * 0.06, y: H * 0.06, width: W * 0.88, height: H * 0.88), S)
+        let cw = Double(cand.width), ch = Double(cand.height)
+        var best = -1.0
+        let scales = fine ? Array(stride(from: 0.80, through: 1.0, by: 0.02)) : [0.80, 0.86, 0.92, 0.98]
+        let shifts = fine ? Array(stride(from: -0.06, through: 0.0601, by: 0.015)) : [-0.06, -0.03, 0, 0.03, 0.06]
+        for sc in scales {
+            for dx in shifts { for dy in shifts {
+                let w = cw * sc, h = ch * sc
+                let x = (cw - w) / 2 + dx * cw, y = (ch - h) / 2 + dy * ch
+                guard x >= 0, y >= 0, x + w <= cw, y + h <= ch else { continue }
+                let b = gray(cand, CGRect(x: x, y: y, width: w, height: h), S)
+                var d = 0.0; for i in 0..<(S * S) { d += a[i] * b[i] }
+                best = max(best, d)
+            } }
+        }
+        return best
+    }
+
+    /// Same picture or a near-identical neighbouring frame? At the best alignment, correlate 4x4
+    /// tiles separately; a neighbour has moved somewhere, so its worst tiles drop while the true
+    /// lab scan differs from ours only evenly (tone, grain). Returns the mean of the two worst tiles.
+    static func worstTiles(_ ours: CGImage, _ cand: CGImage) -> Double {
+        func gray(_ img: CGImage, _ r: CGRect?, _ s: Int) -> [Double] {
+            var px = [UInt8](repeating: 0, count: s * s)
+            let ctx = CGContext(data: &px, width: s, height: s, bitsPerComponent: 8, bytesPerRow: s,
+                                space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+            ctx.interpolationQuality = .high
+            ctx.draw(r.flatMap { img.cropping(to: $0) } ?? img, in: CGRect(x: 0, y: 0, width: s, height: s))
+            return px.map(Double.init)
+        }
+        func ncc(_ a: [Double], _ b: [Double]) -> Double {
+            let ma = a.reduce(0, +) / Double(a.count), mb = b.reduce(0, +) / Double(b.count)
+            var n = 0.0, da = 0.0, db = 0.0
+            for i in a.indices { let x = a[i] - ma, y = b[i] - mb; n += x * y; da += x * x; db += y * y }
+            return da > 0 && db > 0 ? n / sqrt(da * db) : 0
+        }
+        let S = 128, T = 4, ts = S / T
+        let W = Double(ours.width), H = Double(ours.height)
+        let a = gray(ours, CGRect(x: W * 0.06, y: H * 0.06, width: W * 0.88, height: H * 0.88), S)
+        let cw = Double(cand.width), ch = Double(cand.height)
+        var bestWhole = -2.0, bestB: [Double] = []
+        for sc in stride(from: 0.80, through: 1.0, by: 0.02) {
+            for dx in stride(from: -0.06, through: 0.0601, by: 0.015) { for dy in stride(from: -0.06, through: 0.0601, by: 0.015) {
+                let w = cw * sc, h = ch * sc, x = (cw - w) / 2 + dx * cw, y = (ch - h) / 2 + dy * ch
+                guard x >= 0, y >= 0, x + w <= cw, y + h <= ch else { continue }
+                let b = gray(cand, CGRect(x: x, y: y, width: w, height: h), S)
+                let v = ncc(a, b)
+                if v > bestWhole { bestWhole = v; bestB = b }
+            } }
+        }
+        guard !bestB.isEmpty else { return -1 }
+        var tiles: [Double] = []
+        for ty in 0..<T { for tx in 0..<T {
+            var ta: [Double] = [], tb: [Double] = []
+            for y in (ty * ts)..<((ty + 1) * ts) { for x in (tx * ts)..<((tx + 1) * ts) { ta.append(a[y * S + x]); tb.append(bestB[y * S + x]) } }
+            // flat tiles (sky, water haze) carry no evidence either way
+            let m = ta.reduce(0, +) / Double(ta.count)
+            let sd = sqrt(ta.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(ta.count))
+            if sd > 6 { tiles.append(ncc(ta, tb)) }
+        } }
+        tiles.sort()
+        return tiles.count >= 2 ? (tiles[0] + tiles[1]) / 2 : (tiles.first ?? -1)
+    }
+
+    func query(_ positive: CGImage, k: Int = 20) throws -> (LabMatch?, [Candidate]) {
         openIfExists()
         guard let index, dim > 0 else { return (nil, []) }
-        // Vision's orientation hint does not rotate a feature print (measured: all four scored alike),
-        // so the pixels are turned before printing.
+        // 1. recall: ANN top k for each quarter turn, exact re-rank on the stored vectors
         var best: [String: Candidate] = [:]
+        var turnedQ: [Int: CGImage] = [:]
         for r in 0..<4 {
             guard let turned = Develop.orient(positive, rotation: r, mirrored: false),
-                  let q = Self.featurePrint(turned) else { continue }
+                  let norm = Self.normalized(turned), let q = Self.featurePrint(norm) else { continue }
+            turnedQ[r] = norm
             let (keys, _) = try index.search(vector: q, count: k)
             for key in keys {
                 guard let (id, v, albums, created) = vector(key: Int64(key)), !excluded.contains(id) else { continue }
-                let d = Self.cosineDistance(q, v)       // exact re-rank
+                let d = Self.cosineDistance(q, v)
                 if best[id].map({ d < $0.distance }) ?? true {
                     best[id] = Candidate(id: id, distance: d, rotation: r, albums: albums, created: created)
                 }
             }
         }
         let ranked = best.values.sorted { $0.distance < $1.distance }
-        guard let top = ranked.first, top.distance <= Self.maxDistance,
-              let a = PHAsset.fetchAssets(withLocalIdentifiers: [top.id], options: nil).firstObject,
-              let thumb = Self.thumbnail(a, side: 512),
-              let ours = Develop.orient(positive, rotation: top.rotation, mirrored: false)
-        else { return (nil, ranked) }
-        let s = Self.structure(ours, thumb)
-        guard s >= Self.minStructure else { return (nil, ranked) }
-        // confidence: how far inside both thresholds, and how clearly it beats the runner-up
-        let margin = ranked.count > 1 ? min(1, (ranked[1].distance - top.distance) / 0.1) : 1
-        let conf = max(0, min(1, 0.4 * (1 - top.distance / Self.maxDistance) + 0.3 * ((s - Self.minStructure) / (1 - Self.minStructure)) + 0.3 * margin))
+        // 2. an independent check: aligned image correlation for the closest candidates
+        var scored: [Scored] = []
+        for c in ranked.prefix(8) where c.distance <= Self.maxCandidateDistance {
+            guard let a = PHAsset.fetchAssets(withLocalIdentifiers: [c.id], options: nil).firstObject,
+                  let th = Self.indexThumbnail(a), let q = turnedQ[c.rotation] else { continue }
+            scored.append(Scored(id: c.id, distance: c.distance, ncc: Self.alignedNCC(q, th), rotation: c.rotation,
+                                 albums: c.albums, created: c.created))
+        }
+        scored.sort { $0.ncc > $1.ncc }
+        // the same photo imported twice is one photo: drop exact twins of the leader before the margin test
+        if scored.count > 1, let lead = PHAsset.fetchAssets(withLocalIdentifiers: [scored[0].id], options: nil).firstObject,
+           let leadTh = Self.indexThumbnail(lead) {
+            scored = [scored[0]] + scored.dropFirst().filter { c in
+                guard c.ncc >= Self.minNCC, let a = PHAsset.fetchAssets(withLocalIdentifiers: [c.id], options: nil).firstObject,
+                      let th = Self.indexThumbnail(a) else { return true }
+                return Self.alignedNCC(leadTh, th) < Self.duplicateNCC
+            }
+        }
+        lastScored = scored
+        // 3. accept only a clear winner: high correlation AND well ahead of the runner-up
+        guard let top = scored.first, top.ncc >= Self.minNCC else { return (nil, ranked) }
+        let second = scored.dropFirst().first?.ncc ?? 0
+        let margin = top.ncc - second
+        guard margin >= Self.minMargin else { return (nil, ranked) }
+        let conf = max(0, min(1, 0.5 * (top.ncc - Self.minNCC) / (1 - Self.minNCC) + 0.5 * min(1, margin / 0.3)))
         let album = top.albums?.split(separator: "|").first { !$0.localizedCaseInsensitiveContains("film") }.map(String.init)
             ?? top.albums?.split(separator: "|").first.map(String.init)
-        return (LabMatch(assetId: top.id, confidence: conf, distance: top.distance, structure: s, rotation: top.rotation,
+        return (LabMatch(assetId: top.id, confidence: conf, distance: top.distance, structure: top.ncc, rotation: top.rotation,
                          album: album, created: Date(timeIntervalSince1970: top.created)), ranked)
     }
 }

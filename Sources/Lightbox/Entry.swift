@@ -54,10 +54,10 @@ enum Entry {
         let w = full.downsampled(maxSide: 1200)
         let a = Develop.analyse(w, filmType: .colorNegative)
         let pos = Develop.render(w, a, Edit(), crop: .full, look: FilmStock.named("Kodak Gold 200")!.look)!
-        let q = LabIndex.featurePrint(Develop.orient(pos, rotation: 1, mirrored: false)!)!
+        let q = LabIndex.featurePrint(LabIndex.normalized(Develop.orient(pos, rotation: 1, mirrored: false)!)!)!
         let trueId = "0AB1A3F2-2E29-45EC-9836-2EAA7C2F8BA8/L0/001"
         if let asset = PHAssetFetch(trueId) {
-            for (name, img) in [("imageio-360", LabIndex.thumbnail(asset)), ("photokit-300", LabIndex.fastThumbnail(asset))] {
+            for (name, img) in [("index path", LabIndex.indexThumbnail(asset)), ("photokit-300 fast", LabIndex.fastThumbnail(asset))] {
                 if let img, let v = LabIndex.featurePrint(img) {
                     log(String(format: "true pair via %@ (%dx%d): d=%.4f", name, img.width, img.height, LabIndex.cosineDistance(q, v)), out)
                 }
@@ -68,10 +68,10 @@ enum Entry {
         o.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         let f = PHAsset.fetchAssets(with: o); var assets: [PHAsset] = []
         f.enumerateObjects { x, _, _ in assets.append(x) }
-        for (name, fn) in [("imageio-360", LabIndex.thumbnail as (PHAsset, CGFloat) -> CGImage?), ("photokit-300", LabIndex.fastThumbnail)] {
+        for name in ["index path"] {
             let t = Date(); var ok = 0; let lock = NSLock()
             DispatchQueue.concurrentPerform(iterations: assets.count) { i in
-                if let img = fn(assets[i], name == "imageio-360" ? 360 : 300), LabIndex.featurePrint(img) != nil { lock.lock(); ok += 1; lock.unlock() }
+                if let img = LabIndex.indexThumbnail(assets[i]), LabIndex.featurePrint(img) != nil { lock.lock(); ok += 1; lock.unlock() }
             }
             log(String(format: "%@: %d/%d ok, %.1f ms/photo (thumb+print, parallel)", name, ok, assets.count, Date().timeIntervalSince(t) * 1000 / Double(assets.count)), out)
         }
@@ -88,6 +88,11 @@ enum Entry {
         t = Date()
         let (m, _) = try! idx.query(pos)
         log(String(format: "query+re-rank: %.0f ms -> %@ conf %.2f", Date().timeIntervalSince(t) * 1000, m?.assetId ?? "none", m?.confidence ?? 0), out)
+        for c in idx.lastScored.prefix(4) {
+            var fineV = -1.0, tilesV = -1.0
+            if let a = PHAssetFetch(c.id), let th = LabIndex.fullImage(c.id, side: 600), let q = Develop.orient(pos, rotation: c.rotation, mirrored: false) { _ = a; fineV = LabIndex.alignedNCC(q, th, size: 128, fine: true); tilesV = LabIndex.worstTiles(q, th) }
+            log(String(format: "  GOLD cand d=%.3f ncc=%.3f fine=%.3f tiles=%.3f %@", c.distance, c.ncc, fineV, tilesV, c.id), out)
+        }
         let sz = (try? FileManager.default.attributesOfItem(atPath: idx.indexPath)[.size] as? Int) ?? 0
         log("index \(idx.count) vectors, usearch \(sz / 1024) KB", out)
         falsePositives(out)
@@ -103,7 +108,7 @@ enum Entry {
         cols.enumerateObjects { c, _, stop in if c.localizedTitle == "Film" { film = c; stop.pointee = true } }
         guard let film else { log("no Film album", out); return }
         let assets = PHAsset.fetchAssets(in: film, options: nil)
-        var hits = 0, fp = 0, n = 0
+        var hits = 0, fp = 0, n = 0, dups = 0
         var impostorD: [Double] = [], selfD: [Double] = []
         for i in stride(from: 0, to: assets.count, by: max(1, assets.count / 30)) {
             let a = assets.object(at: i)
@@ -115,20 +120,49 @@ enum Entry {
                 "inputRVector": CIVector(x: 1.08, y: 0, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: 0.9, w: 0)])
             guard let q = Develop.ciContext.createCGImage(ci, from: ci.extent) else { continue }
             n += 1
+            if LabIndex.isOurs(a) { n -= 1; continue }
             idx.excluded = []
             if let (m, r) = try? idx.query(q) {
                 if m?.assetId == a.localIdentifier { hits += 1 }
                 if let d = r.first(where: { $0.id == a.localIdentifier })?.distance { selfD.append(d) }
+                let sc = idx.lastScored
+                let selfN = sc.first { $0.id == a.localIdentifier }?.ncc ?? -1
+                let other = sc.filter { $0.id != a.localIdentifier }.first?.ncc ?? -1
+                var fineSelf = -1.0, fineNext = -1.0
+                if let src = LabIndex.fullImage(a.localIdentifier, side: 600) {
+                    // the query at the matched rotation vs each candidate at 600 px
+                    for c in sc.prefix(2) {
+                        guard let th = LabIndex.fullImage(c.id, side: 600), let qq = Develop.orient(q, rotation: c.rotation, mirrored: false) else { continue }
+                        let f = LabIndex.worstTiles(qq, th)
+                        if c.id == a.localIdentifier { fineSelf = f } else if fineNext < 0 { fineNext = f }
+                    }
+                    _ = src
+                }
+                log(String(format: "  SELF  ncc=%.3f nextbest=%.3f tiles self=%.3f next=%.3f %@", selfN, other, fineSelf, fineNext, a.localIdentifier), out)
             }
             idx.excluded = [a.localIdentifier]
             if let (m, r) = try? idx.query(q) {
-                if m != nil { fp += 1; log("FALSE POSITIVE for \(a.localIdentifier): \(m!.assetId) d=\(m!.distance) s=\(m!.structure)", out) }
+                // an "impostor" that is a second copy of the same photo is a correct match
+                var isDup = false
+                if let m, let me = LabIndex.fullImage(a.localIdentifier, side: 600), let th = LabIndex.fullImage(m.assetId, side: 600) {
+                    isDup = LabIndex.alignedNCC(me, th, size: 128, fine: true) >= LabIndex.duplicateNCC
+                }
+                if m != nil && isDup { dups += 1; log("duplicate copy matched for \(a.localIdentifier) (same photo, counted correct)", out) }
+                if m != nil && !isDup { fp += 1; log("FALSE POSITIVE for \(a.localIdentifier): \(m!.assetId) d=\(m!.distance) ncc=\(m!.structure)", out) }
                 if let d = r.first?.distance { impostorD.append(d) }
+                let sc = idx.lastScored
+                var fineTop = -1.0, dupe = -1.0
+                if let t = sc.first, let th = LabIndex.fullImage(t.id, side: 600), let qq = Develop.orient(q, rotation: t.rotation, mirrored: false) {
+                    fineTop = LabIndex.worstTiles(qq, th)
+                    // is the "impostor" just a second copy of the same photo? compare the two originals directly
+                    if let me = LabIndex.fullImage(a.localIdentifier, side: 600) { dupe = LabIndex.alignedNCC(me, th, size: 128, fine: true) }
+                }
+                log(String(format: "  IMPOSTOR top=%.3f second=%.3f tiles=%.3f original-vs-impostor=%.3f", sc.first?.ncc ?? -1, sc.dropFirst().first?.ncc ?? -1, fineTop, dupe), out)
             }
         }
         idx.excluded = []
         func q(_ v: [Double], _ p: Double) -> Double { let s = v.sorted(); return s.isEmpty ? .nan : s[min(s.count - 1, Int(Double(s.count - 1) * p))] }
-        log(String(format: "false-positive check, %d film frames: found itself %d/%d; impostor accepted %d/%d", n, hits, n, fp, n), out)
+        log(String(format: "false-positive check, %d film frames: found itself %d/%d; impostor accepted %d/%d; duplicate copies matched %d", n, hits, n, fp, n, dups), out)
         log(String(format: "  self distance median %.3f max %.3f; best impostor min %.3f median %.3f (gate %.2f)",
                     q(selfD, 0.5), q(selfD, 1), q(impostorD, 0), q(impostorD, 0.5), LabIndex.maxDistance), out)
     }

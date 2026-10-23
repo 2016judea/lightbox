@@ -33,12 +33,28 @@ real-frame and lab-baseline tests read `samples/`, which is kept out of git, and
 ## Lab match
 
 The library index lives in `~/Library/Application Support/Lightbox/`. It holds a USearch HNSW graph
-(cosine) over L2-normalised Vision feature prints, with SQLite alongside it for asset IDs, dates,
-albums and the exact vectors. The index syncs incrementally. On the first run it read 3,727 photos
-in 25.7 s, and a query took 48–73 ms. A match has to come within 0.12 of cosine distance and score
-at least 0.60 on structure. Those thresholds sit inside the gap measured on the Gold 200 frame:
-the true lab scan scored 0.084 and 0.97, and the nearest wrong frame, from the same river, scored
-0.148 and 0.27. The app is ad-hoc signed, so macOS asks for Photos access again after each rebuild.
+(cosine) over Vision feature prints, with SQLite alongside it for asset IDs, dates, albums, the
+exact vectors, a change token and the photos that can't be read. Query and index images both go
+through one path: JPEG, then an ImageIO thumbnail at 360 px.
+
+It takes the 20 nearest photos by feature print and re-ranks them by image correlation, searched
+over small crops and shifts. A match needs a correlation of at least 0.85 and a lead of at least
+0.08 over the runner-up; exact duplicates count as one photo. Lightbox's own exports
+(`frame-01.jpg`) are never candidates.
+
+Bench run, 2026-10-22, on his library of 3,720 photos (`Lightbox --lab-bench <raw> <dir>`):
+
+- **First build:** 25.4 s, with the Film album ready at 9.8 s.
+- **Warm sync** (change token): 0.05 s.
+- **Query:** 199 ms.
+- **The Gold 200 frame:** finds IMG_7810 at correlation 0.908; the runner-up scores 0.313.
+- **30 Film frames,** each queried with a cropped, rotated, colour-shifted copy of itself:
+  - 27/30 find themselves;
+  - with the frame itself removed, 2/30 match something else. Both are near-identical
+    neighbouring shots that score 0.90–0.96, which no gate separates from his real pair (0.908).
+
+Builds are signed with a local self-signed identity (`scripts/make_signing_identity.sh`), so
+Photos access survives rebuilds.
 
 See `DATA_MODEL.md` for the model, and `PARITY.md` for what was kept from SilverFast and why.
 
