@@ -26,6 +26,10 @@ struct FilmStock: Identifiable, Hashable {
         var tintBias: Float = 0
         /// Output black level, 0...1, as a lab print lifts its deepest shadow.
         var outputBlack: Float = 0
+        /// Print-curve steepness multiplier (1 = standard paper).
+        var contrastBias: Float = 1
+        /// Output white level, 0...1: below 1 keeps highlights off pure white, as lab scans do.
+        var outputWhite: Float = 1
         /// Normalise each channel to its own density range. This is what removes the orange mask;
         /// off, all three share one range and the film's colour survives.
         var perChannelLevels = true
@@ -45,11 +49,13 @@ struct FilmStock: Identifiable, Hashable {
     static let defaultName = "Kodak Gold 200"   // the roll in the scanner on 2026-10-22
 
     static let all: [FilmStock] = [
-        // Tuned against his own lab scan of the same frame (Photos IMG_7810, Big Sky 2025) by a grid
-        // search over these four values (GoldSearch test, 2026-10-22): quantile distance to the lab
-        // 31.0 -> 8.1 on a 0-255 scale. A black lift was in the search and lost (best = 0).
+        // Tuned against his own lab scan of the same frame (Photos IMG_7810, Big Sky 2025) by
+        // coordinate descent over seven values (GoldSearch test, 2026-10-22): quantile distance to the
+        // lab 31.0 (untuned) -> 8.9 (exposure/warm/tint) -> 5.2 here. Contrast x1.24 deepens the
+        // blacks, the tint moved from magenta to slightly green to take the pink out of the water,
+        // and highlights stop just short of white as the lab's do.
         .init(name: "Kodak Gold 200", note: "very consistent, seldom misses the mark", type: .colorNegative,
-              look: .init(neutral: 0.5, warmBias: 0.02, exposureBias: 0.12, tintBias: 0.006)),
+              look: .init(neutral: 0.55, warmBias: 0.02, exposureBias: 0.12, tintBias: -0.006, contrastBias: 1.24, outputWhite: 0.995)),
         .init(name: "Black & White", note: "tone, texture, shadow", type: .bwNegative),
         // Expired: fog adds density everywhere, so blacks print grey and the colour drifts.
         // The film base is measured off the fogged frame itself; then 6% of the range is clipped as

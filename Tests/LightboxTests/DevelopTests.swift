@@ -287,6 +287,6 @@ final class LabBaselineTests: XCTestCase {
         save(fitted, "ours_gold_fitted.jpg")
         print("FIT  ", LabCompare.stats(Develop.render(w, a, fit, look: gold)!))
         XCTAssertLessThanOrEqual(after, before)
-        XCTAssertLessThan(d0, 12, "Gold 200 out of the box lands within 12/255 of his lab scan's tone and colour")
+        XCTAssertLessThan(d0, 7, "Gold 200 out of the box lands within 7/255 of his lab scan's tone and colour")
     }
 }

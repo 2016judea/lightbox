@@ -182,13 +182,13 @@ enum Develop {
     }
 
     /// Print curve: a sigmoid with a soft toe and shoulder, like paper. `k` is its steepness.
-    static func curveLUT(k: Float, black: Float = 0, size: Int = 4096) -> [Float] {
+    static func curveLUT(k: Float, black: Float = 0, white: Float = 1, size: Int = 4096) -> [Float] {
         let f: (Float) -> Float = { 1 / (1 + expf(-k * ($0 - 0.5))) }
         let f0 = f(0), f1 = f(1)
         return (0..<size).map { i in
             let x = -0.25 + 1.5 * Float(i) / Float(size - 1)
             let y = (f(x) - f0) / (f1 - f0)
-            return black + (1 - black) * powf(max(0, min(1, y)), 1 / 1.1)
+            return black + (white - black) * powf(max(0, min(1, y)), 1 / 1.1)
         }
     }
 
@@ -200,8 +200,8 @@ enum Develop {
         let x0 = max(0, min(W - 1, Int(crop.x * Double(W)))), y0 = max(0, min(H - 1, Int(crop.y * Double(H))))
         let cw = max(1, min(W - x0, Int(crop.w * Double(W)))), ch = max(1, min(H - y0, Int(crop.h * Double(H))))
 
-        let k = Float(5.0 * (1 + 0.5 * e.contrast))
-        let lut = curveLUT(k: k, black: look.outputBlack)
+        let k = Float(5.0 * (1 + 0.5 * e.contrast)) * look.contrastBias
+        let lut = curveLUT(k: k, black: look.outputBlack, white: look.outputWhite)
         let lutScale = Float(lut.count - 1) / 1.5
         let expo = Float(e.exposure) * 0.3 + look.exposureBias
         let warm = Float(e.warmth) * 0.08 + look.warmBias
