@@ -225,6 +225,20 @@ final class Store: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    var canGoBackToLoad: Bool { phase == .previewed || phase == .editing }
+
+    /// Back to the Load step. From Preview: drop the preview only; stock, roll, frame number and
+    /// orientation stay. From Keep: the full scan and its edits are already on disk (raw + sidecar),
+    /// so nothing is lost and this is the next frame.
+    func backToLoad() {
+        guard !cropping else { cropping = false; return }
+        if phase == .editing { nextFrame(); return }
+        guard phase == .previewed else { return }
+        labTask?.cancel(); lab = .idle; labImage = nil; comparing = false
+        image = nil; uncropped = nil; working = nil; analysis = nil; loupe = nil; zoomed = nil; focus = nil
+        phase = .ready
+    }
+
     func nextFrame() {
         frameNumber += 1
         let keep = edit

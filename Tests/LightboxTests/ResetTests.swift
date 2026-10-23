@@ -34,3 +34,31 @@ final class ResetTests: XCTestCase {
         st.stock = "Kodak Portra 400"; st.reset(.stock); XCTAssertEqual(st.stock, FilmStock.defaultName)
     }
 }
+
+final class BackToLoadTests: XCTestCase {
+    /// Going back from Keep keeps the roll (stock, type, orientation) and moves to the next frame;
+    /// from Load itself it does nothing.
+    @MainActor
+    func testBackToLoadKeepsTheRoll() async throws {
+        let s = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("samples")
+        let src = s.appendingPathComponent("full_3600_irclean.pnm")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: src.path))
+        Store.labSearchEnabled = false
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lb-back-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let raw = dir.appendingPathComponent("frame-01-raw.tif")
+        try RawImage.loadPNM(src).downsampled(maxSide: 600).writeRawTIFF(raw)
+        let st = Store()
+        st.backToLoad()                                     // nothing to go back from
+        await st.open(raw)
+        st.stock = "Candido 400"; st.edit.rotation = 1
+        XCTAssertTrue(st.canGoBackToLoad)
+        let frame = st.frameNumber
+        st.backToLoad()
+        XCTAssertEqual(st.phase, .ready)
+        XCTAssertEqual(st.stock, "Candido 400")
+        XCTAssertEqual(st.edit.rotation, 1)
+        XCTAssertEqual(st.frameNumber, frame + 1)
+        XCTAssertNil(st.image)
+    }
+}

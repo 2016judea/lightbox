@@ -47,9 +47,13 @@ struct StepBar: View {
         HStack(spacing: 6) {
             ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
                 HStack(spacing: 6) {
-                    Text(s)
-                        .font(.system(size: 12, weight: i == current ? .semibold : .regular))
-                        .foregroundStyle(i == current ? Color.white : Color.white.opacity(i < current ? 0.55 : 0.3))
+                    if i == 0 && store.canGoBackToLoad {
+                        LoadStepLink()
+                    } else {
+                        Text(s)
+                            .font(.system(size: 12, weight: i == current ? .semibold : .regular))
+                            .foregroundStyle(i == current ? Color.white : Color.white.opacity(i < current ? 0.55 : 0.3))
+                    }
                     if i < steps.count - 1 {
                         Rectangle().fill(Color.white.opacity(0.15)).frame(width: 22, height: 1)
                     }
@@ -63,6 +67,26 @@ struct StepBar: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .padding(.trailing, 20)
         }
+    }
+}
+
+/// "Load" in the step bar, clickable once you're past it.
+struct LoadStepLink: View {
+    @EnvironmentObject var store: Store
+    @State private var hover = false
+    var body: some View {
+        Button { store.backToLoad() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "chevron.left").font(.system(size: 9, weight: .semibold))
+                Text("Load").font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(Color.white.opacity(hover ? 1 : 0.7))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(Color.white.opacity(hover ? 0.14 : 0.06)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityLabel("Back to Load")
     }
 }
 
@@ -228,6 +252,11 @@ struct ActionBar: View {
                 }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
             case .previewed:
                 if store.cropping { cropButtons } else {
+                    Button { store.backToLoad() } label: { Label("Load another strip", systemImage: "chevron.left") }
+                        .buttonStyle(QuietButton())
+                        .keyboardShortcut(.leftArrow, modifiers: .command)
+                    // Esc does the same
+                    Button("") { store.backToLoad() }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0)
                     Button("Preview again") { Task { await store.preview() } }.buttonStyle(QuietButton())
                     Button { Task { await store.scan() } } label: {
                         Label("Scan", systemImage: "camera.aperture")
