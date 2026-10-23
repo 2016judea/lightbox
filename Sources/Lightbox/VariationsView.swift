@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Six takes on the frame after a scan. The default (no changes) sits top right; Claude's five fill the
-/// other places in order: two along the top, three along the bottom. Click one to edit from it.
+/// other places in order: two along the top, three along the bottom. Tick one or more; one scan makes them all.
 struct VariationsView: View {
     @EnvironmentObject var store: Store
 
@@ -34,11 +34,11 @@ struct VariationsView: View {
                 Text(m).foregroundStyle(.secondary).lineLimit(2)
                 Button("Try again") { store.generateVariations() }.buttonStyle(.link)
             default:
-                Text("Pick a starting point").foregroundStyle(.secondary)
+                Text("Pick one or more. Scan makes them all.").foregroundStyle(.secondary)
                 Button("Five more") { store.generateVariations() }.buttonStyle(.link)
             }
             Spacer()
-            Button { store.showingVariations = false } label: { Text("Close") }
+            Button { store.showingVariations = false } label: { Text(store.picked.isEmpty ? "Close" : "Done") }
                 .buttonStyle(.link).keyboardShortcut(.cancelAction)
         }
         .font(.system(size: 13))
@@ -53,10 +53,10 @@ struct VariationTile: View {
     @EnvironmentObject var store: Store
     let v: Variation
     @State private var hover = false
-    var chosen: Bool { store.chosenVariation == v.id }
+    var chosen: Bool { store.picked.contains(v.id) }
 
     var body: some View {
-        Button { store.chooseVariation(v) } label: {
+        Button { store.togglePick(v) } label: {
             VStack(alignment: .leading, spacing: 6) {
                 ZStack {
                     Color.black.opacity(0.25)
@@ -65,13 +65,20 @@ struct VariationTile: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(chosen ? Color.accentColor : Color.white.opacity(hover ? 0.8 : 0.35))
+                        .background(Circle().fill(Color.black.opacity(0.35)))
+                        .padding(8)
+                }
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(chosen ? Color.accentColor : Color.white.opacity(hover ? 0.9 : (v.isDefault ? 0.35 : 0)),
                             lineWidth: chosen || hover ? 2 : 1))
                 HStack(spacing: 6) {
                     Text(v.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                     if v.isDefault { Text("Default").font(.system(size: 11)).foregroundStyle(.secondary) }
-                    if chosen { Text("In use").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.accentColor) }
+                    if chosen { Text(store.picked.count > 1 ? "Picked \((store.picked.firstIndex(of: v.id) ?? 0) + 1)" : "Picked").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.accentColor) }
                 }
                 Text(v.why).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -70,7 +70,7 @@ final class VariationTests: XCTestCase {
         print("sheet", out.path)
     }
 
-    /// Picking a tile on Preview takes its settings, closes the grid and names the pick for Scan.
+    /// Ticking tiles on Preview: the preview follows the latest tick, and Scan is labelled with the picks.
     @MainActor
     func testChoosingATileCarriesItsSettings() {
         Store.variationsEnabled = false
@@ -80,11 +80,34 @@ final class VariationTests: XCTestCase {
         let v = Variation(name: "Golden evening", why: "Warmer.", edit: e)
         st.variations = [Variation(name: "As scanned", why: "No changes.", edit: Edit(), isDefault: true), v]
         st.showingVariations = true
-        st.chooseVariation(v)
+        st.togglePick(v)
         XCTAssertEqual(st.edit.warmth, 0.35, accuracy: 1e-9)
-        XCTAssertFalse(st.showingVariations)
-        XCTAssertEqual(st.chosenName, "Golden evening")
-        st.undo()
-        XCTAssertEqual(st.edit.warmth, 0, accuracy: 1e-9)
+        XCTAssertEqual(st.pickedLabel, "Golden evening")
+        var e2 = Edit(); e2.contrast = 0.5
+        let v2 = Variation(name: "Hard noon", why: "Punchier.", edit: e2)
+        st.variations.append(v2)
+        st.togglePick(v2)
+        XCTAssertEqual(st.pickedLabel, "2 picks")
+        XCTAssertEqual(st.edit.contrast, 0.5, accuracy: 1e-9)
+        st.togglePick(v2)                                   // untick: back to the remaining pick
+        XCTAssertEqual(st.edit.warmth, 0.35, accuracy: 1e-9)
+        XCTAssertEqual(st.picked, [v.id])
+    }
+
+    /// After a multi-pick scan, switching picks keeps each one's own changes.
+    @MainActor
+    func testSwitchingPicksKeepsEachEdit() {
+        Store.variationsEnabled = false
+        let st = Store()
+        var a = Edit(); a.warmth = 0.3
+        var b = Edit(); b.contrast = 0.4
+        st.picks = [.init(id: UUID(), name: "A", edit: a), .init(id: UUID(), name: "B", edit: b)]
+        st.activePick = 0; st.edit = a
+        st.edit.exposure = 0.2                               // tweak A
+        st.selectPick(1)
+        XCTAssertEqual(st.edit.contrast, 0.4, accuracy: 1e-9)
+        st.selectPick(0)
+        XCTAssertEqual(st.edit.exposure, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(st.edit.warmth, 0.3, accuracy: 1e-9)
     }
 }

@@ -66,7 +66,11 @@ final class Store: ObservableObject {
     @Published var variations: [Variation] = []
     @Published var variationState: VariationState = .idle
     @Published var showingVariations = false
-    @Published var chosenVariation: UUID?      // the tile last picked, highlighted when the grid reopens
+    @Published var picked: [UUID] = []        // tiles ticked on Preview, in the order they were ticked
+    /// After a scan with several picks: one per pick, each with its own edit. The editor works on one at a time.
+    struct Pick: Identifiable, Equatable { let id: UUID; var name: String; var edit: Edit; var inPhotos = false }
+    @Published var picks: [Pick] = []
+    @Published var activePick = 0
     private var variationTask: Task<Void, Never>?
     @Published var loupe: CGImage?          // 1:1 crop of the full scan, shown while sharpening
     @Published var zoomed: CGImage?         // the whole picture at 100%, on double-click
@@ -158,6 +162,7 @@ final class Store: ObservableObject {
         let folder = sessionFolder
         let url = folder.appendingPathComponent(frameStem + "-raw.pnm")
         let irURL = Dust.irURL(for: url)
+        let chosen = picked.compactMap { id in variations.first { $0.id == id } }
         phase = .scanning(0)
         do {
             if scanner.canCaptureIR {
@@ -170,6 +175,11 @@ final class Store: ObservableObject {
                 }
             }
             edit.dust = dust
+            // Several picks: the one scan makes all of them; the editor opens on the first.
+            if chosen.count > 1 {
+                picks = chosen.map { v in var e = v.edit; e.dust = dust; return Pick(id: v.id, name: v.name, edit: e) }
+                activePick = 0; edit = picks[0].edit
+            } else { picks = [] }
             try await load(url, keepEdit: true)
             saveSidecar()
             if case .found = lab {} else { findLabScan() }
@@ -216,7 +226,7 @@ final class Store: ObservableObject {
         variations = [Variation(name: "As scanned", why: "No changes.", edit: base,
                                 image: Develop.render(small, a, base, look: look), isDefault: true)]
         variationState = .thinking
-        chosenVariation = nil
+        picked = []
         showingVariations = true
         variationTask = Task { [weak self] in
             do {
@@ -241,13 +251,54 @@ final class Store: ObservableObject {
         }
     }
 
-    var chosenName: String? { variations.first { $0.id == chosenVariation }?.name }
+    /// One pick: its name. Several: how many. None: nil.
+    var pickedLabel: String? {
+        let names = picked.compactMap { id in variations.first { $0.id == id }?.name }
+        if names.count > 1 { return "\(names.count) picks" }
+        return names.first
+    }
 
-    /// Takes a tile's settings into the editor, where every slider still works on it.
-    func chooseVariation(_ v: Variation) {
-        if v.edit != edit { recordUndo(); edit = v.edit; editChanged() }
-        chosenVariation = v.id
-        showingVariations = false
+    /// Ticks or unticks a tile. The preview shows the tile just ticked (or the last one still ticked).
+    func togglePick(_ v: Variation) {
+        recordUndo()
+        if let i = picked.firstIndex(of: v.id) {
+            picked.remove(at: i)
+            let last = picked.last.flatMap { id in variations.first { $0.id == id } } ?? variations.first { $0.isDefault }
+            if let last { edit = last.edit }
+        } else {
+            picked.append(v.id); edit = v.edit
+        }
+        editChanged()
+    }
+
+    /// Switches the editor to another pick, keeping what was changed on the one being left.
+    func selectPick(_ i: Int) {
+        guard picks.indices.contains(i) else { return }
+        if picks.indices.contains(activePick) { picks[activePick].edit = edit }
+        activePick = i
+        if edit != picks[i].edit { edit = picks[i].edit; editChanged() }
+    }
+
+    /// Saves every pick (as its own version of the frame), or just the one if there is only one.
+    func saveAll() async {
+        guard picks.count > 1 else { await export(.jpeg); return }
+        let back = activePick
+        for i in picks.indices { selectPick(i); await export(.jpeg) }
+        selectPick(back)
+        toast = "Saved \(picks.count) versions to \(sessionFolder.lastPathComponent)"
+    }
+
+    /// Adds every pick to the Film album, skipping any already there.
+    func addAllToPhotos() async {
+        guard picks.count > 1 else { await addToPhotos(); return }
+        let back = activePick
+        var added = 0
+        for i in picks.indices where !picks[i].inPhotos {
+            selectPick(i); await addToPhotos()
+            if lastExport?.inPhotos == true { picks[i].inPhotos = true; added += 1 }
+        }
+        selectPick(back)
+        toast = added == 0 ? "Already in Photos" : "Added \(added) to Photos · Film"
     }
 
     /// Finds and removes dust off the main thread; the toggle shows a spinner meanwhile.
@@ -291,7 +342,7 @@ final class Store: ObservableObject {
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
         if showingVariations { showingVariations = false; return }   // Esc closes the grid first
-        variationTask?.cancel(); variations = []; variationState = .idle; chosenVariation = nil
+        variationTask?.cancel(); variations = []; variationState = .idle; picked = []; picks = []; activePick = 0
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
@@ -301,7 +352,7 @@ final class Store: ObservableObject {
     }
 
     func nextFrame() {
-        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false; chosenVariation = nil
+        variationTask?.cancel(); variations = []; variationState = .idle; showingVariations = false; picked = []; picks = []; activePick = 0
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored

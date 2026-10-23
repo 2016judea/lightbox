@@ -128,6 +128,7 @@ struct CanvasView: View {
                     ImageView(image: img)
                         .overlay(alignment: .top) {
                             if store.phase == .previewed && !store.variations.isEmpty { BackToAlternatives().padding(.top, 12) }
+                            else if store.phase == .editing && store.picks.count > 1 { PickSwitcher().padding(.top, 12) }
                         }
                         .onTapGesture(count: 2) { if store.phase == .editing { store.toggleZoom() } }
                         .overlay(alignment: .topTrailing) {
@@ -268,9 +269,10 @@ struct ActionBar: View {
                     }
                     .buttonStyle(QuietButton())
                     .disabled(store.variations.isEmpty)
-                    if !store.showingVariations {
-                        Button { Task { await store.scan() } } label: {
-                            Label(store.chosenName.map { "Scan “\($0)”" } ?? "Scan", systemImage: "camera.aperture")
+                    if !store.showingVariations || !store.picked.isEmpty {
+                        Button { store.showingVariations = false; Task { await store.scan() } } label: {
+                            Label(store.picked.count > 1 ? "Scan \(store.picked.count) picks"
+                                  : (store.pickedLabel.map { "Scan “\($0)”" } ?? "Scan"), systemImage: "camera.aperture")
                         }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
                     }
                 }
@@ -278,9 +280,14 @@ struct ActionBar: View {
                 if store.cropping { cropButtons } else {
                     Button { store.nextFrame() } label: { Label("Next frame", systemImage: "arrow.right") }
                         .buttonStyle(QuietButton())
-                    Button { Task { await store.export(.jpeg) } } label: { Label("Save", systemImage: "square.and.arrow.down") }
+                    let n = store.picks.count
+                    Button { Task { await store.saveAll() } } label: {
+                        Label(n > 1 ? "Save all \(n)" : "Save", systemImage: "square.and.arrow.down")
+                    }
                         .buttonStyle(QuietButton())
-                    Button { Task { await store.addToPhotos() } } label: { Label("Add to Photos", systemImage: "photo.on.rectangle") }
+                    Button { Task { await store.addAllToPhotos() } } label: {
+                        Label(n > 1 ? "Add all \(n) to Photos" : "Add to Photos", systemImage: "photo.on.rectangle")
+                    }
                         .buttonStyle(PrimaryButton())
                 }
             default:
@@ -337,7 +344,7 @@ struct BackToAlternatives: View {
             HStack(spacing: 6) {
                 Image(systemName: "square.grid.3x2").font(.system(size: 11, weight: .semibold))
                 Text("All alternatives").font(.system(size: 12, weight: .semibold))
-                if let n = store.chosenName {
+                if let n = store.pickedLabel {
                     Text("·  \(n)").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
@@ -349,6 +356,30 @@ struct BackToAlternatives: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .keyboardShortcut("g", modifiers: [])
+    }
+}
+
+/// After one scan of several picks: one capsule per pick; the editor works on the selected one.
+struct PickSwitcher: View {
+    @EnvironmentObject var store: Store
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(store.picks.enumerated()), id: \.element.id) { i, p in
+                Button { store.selectPick(i) } label: {
+                    HStack(spacing: 4) {
+                        Text(p.name).font(.system(size: 12, weight: i == store.activePick ? .semibold : .regular))
+                        if p.inPhotos { Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)) }
+                    }
+                    .foregroundStyle(.white.opacity(i == store.activePick ? 1 : 0.7))
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Color.white.opacity(i == store.activePick ? 0.22 : 0)))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.black.opacity(0.55)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
     }
 }
 
