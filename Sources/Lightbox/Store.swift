@@ -737,7 +737,7 @@ final class Store: ObservableObject {
                     kCGImagePropertyTIFFModel: "OpticFilm 8200i",
                 ] as [CFString: Any],
             ]
-            if format == .jpeg { props[kCGImageDestinationLossyCompressionQuality] = 0.92 }
+            if format == .jpeg { props[kCGImageDestinationLossyCompressionQuality] = 1.0 }   // ImageIO only writes 4:4:4 colour at 1.0; below it reds block up at 2x2
             else { props[kCGImagePropertyTIFFDictionary] = [kCGImagePropertyTIFFCompression: 5, kCGImagePropertyTIFFSoftware: "Lightbox"] as [CFString: Any] }
             CGImageDestinationAddImage(dest, img, props as CFDictionary)
             guard CGImageDestinationFinalize(dest) else { return false }

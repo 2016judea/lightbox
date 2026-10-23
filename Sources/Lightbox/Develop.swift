@@ -266,6 +266,12 @@ enum Develop {
                 }
             }
         }
+        // Colour noise: the scanner speckles red and blue at the grain's scale, which labs smooth away.
+        // Blur only the colour (Cb, Cr) and keep every bit of luminance, so grain and detail stay.
+        // Measured 2026-10-23 against lab scan IMG_7810: our red-chroma noise was 2x the lab's (1.71 vs 0.86).
+        let dpiScale = Double(cw) / Double(max(1, Int(crop.w * 5184)))
+        if sixteenBit { chromaDenoise(&out16, cw, ch, radius: 2.5 * dpiScale, maxValue: 65535) }
+        else { chromaDenoise(&out8, cw, ch, radius: 2.5 * dpiScale, maxValue: 255) }
         let bpc = sixteenBit ? 16 : 8
         let data: Data = sixteenBit ? out16.withUnsafeBytes { Data($0) } : out8.withUnsafeBytes { Data($0) }
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
@@ -279,7 +285,7 @@ enum Develop {
         // scaled to the size being rendered, so the preview and the export look alike.
         let (amount, radius1) = sharpening(e.sharpen)
         guard amount > 0.01, let o = oriented else { return oriented }
-        let radius = max(0.3, radius1 * Double(cw) / Double(max(1, Int(crop.w * 5184))))
+        let radius = max(0.3, radius1 * dpiScale)
         return sharpen(o, radius: radius, amount: amount)
     }
 
@@ -290,6 +296,42 @@ enum Develop {
     }
 
     static let ciContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
+
+    /// Gaussian-blurs Cb and Cr (sigma = radius) in an interleaved RGB buffer,
+    /// leaving luminance exactly as it was.
+    static func chromaDenoise<T: BinaryInteger>(_ buf: inout [T], _ w: Int, _ h: Int, radius: Double, maxValue: Float) {
+        let k = Int((radius * 2.5).rounded())
+        guard k >= 1, w > 2 * k, h > 2 * k else { return }
+        let n = w * h
+        var Y = [Float](repeating: 0, count: n), cb = Y, cr = Y
+        for i in 0..<n {
+            let r = Float(buf[i * 3]), g = Float(buf[i * 3 + 1]), b = Float(buf[i * 3 + 2])
+            let y = 0.299 * r + 0.587 * g + 0.114 * b
+            Y[i] = y; cb[i] = b - y; cr[i] = r - y
+        }
+        // separable Gaussian, sigma = radius, applied as a row pass then a column pass
+        let sigma = Float(radius)
+        var kern = (-k...k).map { expf(-Float($0 * $0) / (2 * sigma * sigma)) }
+        let sum = kern.reduce(0, +); kern = kern.map { $0 / sum }
+        let side = UInt32(2 * k + 1)
+        func blur(_ p: inout [Float]) {
+            var tmp = [Float](repeating: 0, count: n)
+            p.withUnsafeMutableBytes { src in tmp.withUnsafeMutableBytes { dst in
+                var s = vImage_Buffer(data: src.baseAddress, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
+                var d = vImage_Buffer(data: dst.baseAddress, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
+                vImageConvolve_PlanarF(&s, &d, nil, 0, 0, kern, 1, side, 0, vImage_Flags(kvImageEdgeExtend))
+                vImageConvolve_PlanarF(&d, &s, nil, 0, 0, kern, side, 1, 0, vImage_Flags(kvImageEdgeExtend))
+            } }
+        }
+        blur(&cb); blur(&cr)
+        for i in 0..<n {
+            let y = Y[i], r = cr[i] + y, b = cb[i] + y
+            let g = (y - 0.299 * r - 0.114 * b) / 0.587
+            buf[i * 3] = T(max(0, min(maxValue, r)).rounded())
+            buf[i * 3 + 1] = T(max(0, min(maxValue, g)).rounded())
+            buf[i * 3 + 2] = T(max(0, min(maxValue, b)).rounded())
+        }
+    }
 
     static func sharpen(_ img: CGImage, radius: Double, amount: Double) -> CGImage? {
         let ci = CIImage(cgImage: img)
