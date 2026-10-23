@@ -33,7 +33,7 @@ struct TypeChip: View {
     var body: some View {
         Menu {
             ForEach(FilmType.allCases) { t in
-                Button { store.touched("film"); store.chooseFilmType(t) } label: {
+                Button { store.chooseFilmType(t) } label: {
                     if t == store.edit.filmType { Label(t.label, systemImage: "checkmark") } else { Text(t.label) }
                 }
             }
@@ -49,8 +49,6 @@ struct TypeChip: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .simultaneousGesture(TapGesture().onEnded { store.touched("film") })
-        .help(store.guess.map { "Detected: \($0.reason)" } ?? "Detected from the preview")
     }
 }
 
@@ -65,7 +63,7 @@ struct StockChip: View {
     }
 
     var body: some View {
-        Button { query = ""; open = true; store.touched("stock") } label: {
+        Button { query = ""; open = true } label: {
             Chip(text: store.stock.isEmpty ? "Film stock" : store.stock, symbol: "film")
         }
         .buttonStyle(.plain)

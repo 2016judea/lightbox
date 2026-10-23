@@ -5,8 +5,7 @@
 A calm Mac app for scanning your own 35mm film on a Plustek OpticFilm 8200i, in place of
 SilverFast. Slide the holder in, press Preview, press Scan, keep the picture. It tells colour
 negative, B&W and slide apart by itself, inverts with the film's own base as the reference, and
-opens every scan already adjusted. A first-run walkthrough and one-time tips explain each control
-in plain words.
+opens every scan already adjusted. A first-run walkthrough shows how to load and scan.
 
 ## What it does
 

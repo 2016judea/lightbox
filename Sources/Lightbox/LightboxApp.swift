@@ -34,7 +34,7 @@ struct LightboxApp: App {
                 Button("Redo") { store.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .help) {
-                Button("Show the Walkthrough and Tips Again") { store.resetTips() }
+                Button("Show the Walkthrough Again") { store.onboarded = false }
             }
         }
     }

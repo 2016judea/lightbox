@@ -1,15 +1,13 @@
 import SwiftUI
 
-/// The adjust pane, after Photos: a few sliders, grouped, each explained the first time it's touched.
+/// The adjust pane, after Photos: a few sliders, grouped, each with its own reset.
 struct EditPane: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                TipCard(ids: ["preview", "scan", "next", "lab"])
-
-                Section("Film", tips: ["film", "stock", "reset"]) {
+                Section("Film") {
                     FilmChips()
                     if let why = store.look.explain {
                         Label(why, systemImage: "info.circle")
@@ -18,7 +16,7 @@ struct EditPane: View {
                     }
                 }
 
-                Section("Light", tips: ["exposure", "contrast", "sharpen"]) {
+                Section("Light") {
                     AdjustSlider(id: "exposure", label: "Exposure", symbol: "sun.max", value: $store.edit.exposure)
                     AdjustSlider(id: "contrast", label: "Contrast", symbol: "circle.righthalf.filled", value: $store.edit.contrast)
                     AdjustSlider(id: "sharpen", label: "Sharpness", symbol: "triangle", value: $store.edit.sharpen,
@@ -26,14 +24,14 @@ struct EditPane: View {
                                  onHover: { on in if on { store.updateLoupe() } else { store.hideLoupe() } })
                 }
 
-                Section("Colour", tips: ["warmth", "tint"]) {
+                Section("Colour") {
                     AdjustSlider(id: "warmth", label: "Warmth", symbol: "thermometer.medium", value: $store.edit.warmth,
                                  track: [Color(red: 0.35, green: 0.55, blue: 1), Color(white: 0.5), Color(red: 1, green: 0.72, blue: 0.3)])
                     AdjustSlider(id: "tint", label: "Tint", symbol: "drop", value: $store.edit.tint,
                                  track: [Color(red: 0.3, green: 0.85, blue: 0.4), Color(white: 0.5), Color(red: 0.95, green: 0.35, blue: 0.85)])
                 }
 
-                Section("Crop & Rotate", tips: ["rotate", "crop"]) {
+                Section("Crop & Rotate") {
                     HStack(spacing: 6) {
                         IconButton(symbol: "rotate.left", help: "Rotate left") { store.rotate(-1) }
                         IconButton(symbol: "rotate.right", help: "Rotate right") { store.rotate(1) }
@@ -60,10 +58,10 @@ struct EditPane: View {
                     }
                 }
 
-                Section("Dust", tips: ["dust"]) {
+                Section("Dust") {
                     if store.hasIR {
                         HStack {
-                            Toggle(isOn: Binding(get: { store.edit.dust }, set: { store.touched("dust"); store.edit.dust = $0 })) {
+                            Toggle(isOn: Binding(get: { store.edit.dust }, set: { store.edit.dust = $0 })) {
                                 Label("Remove dust", systemImage: "sparkles")
                             }
                             .toggleStyle(.switch)
@@ -88,11 +86,11 @@ struct EditPane: View {
                     }
                 }
 
-                Section("Scan", tips: ["dpi"]) {
+                Section("Scan") {
                     HStack {
                         Label("Resolution", systemImage: "square.resize").font(.system(size: 13))
                         Spacer()
-                        Picker("", selection: Binding(get: { store.dpi }, set: { store.touched("dpi"); store.dpi = $0 })) {
+                        Picker("", selection: Binding(get: { store.dpi }, set: { store.dpi = $0 })) {
                             ForEach([1200, 2400, 3600, 7200], id: \.self) { Text(verbatim: "\($0) dpi").tag($0) }
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
@@ -117,17 +115,15 @@ struct EditPane: View {
 
 private struct Section<Content: View>: View {
     let title: String
-    let tips: Set<String>
     @ViewBuilder var content: () -> Content
-    init(_ title: String, tips: Set<String> = [], @ViewBuilder content: @escaping () -> Content) {
-        self.title = title; self.tips = tips; self.content = content
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title; self.content = content
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.system(size: 11, weight: .semibold)).tracking(0.8).textCase(.uppercase)
                 .foregroundStyle(.white.opacity(0.45))
             content()
-            TipCard(ids: tips)
         }
         .padding(.top, 6)
     }
@@ -147,8 +143,6 @@ struct ResetButton: View {
         .foregroundStyle(Color.accentColor)
         .opacity(on ? 1 : 0)
         .allowsHitTesting(on)
-        .help(store.resetHelp(setting))
-        .onChange(of: on) { _, now in if now { store.touched("reset") } }
     }
 }
 
@@ -176,13 +170,12 @@ struct AdjustSlider: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { if let s = Setting(rawValue: id) { store.reset(s) } }
-            .help("Double-click to reset")
             ZStack {
                 if let track {
                     LinearGradient(colors: track, startPoint: .leading, endPoint: .trailing)
                         .frame(height: 3).clipShape(Capsule()).opacity(0.55).padding(.horizontal, 2)
                 }
-                Slider(value: $value, in: -1...1) { editing in if editing { store.touched(id); store.recordUndo() }; onEditing?(editing) }
+                Slider(value: $value, in: -1...1) { editing in if editing { store.recordUndo() }; onEditing?(editing) }
                     .controlSize(.small)
                     .tint(track == nil ? .white : .clear)
             }
@@ -201,33 +194,6 @@ struct IconButton: View {
                 .frame(width: 30, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.08)))
         }
-        .buttonStyle(.plain).help(help)
-    }
-}
-
-/// The inline coach tip: appears where you are, once, and goes when you've read it.
-struct TipCard: View {
-    @EnvironmentObject var store: Store
-    var ids: Set<String>? = nil      // nil = show any tip
-    var body: some View {
-        if let tip = store.activeTip, ids?.contains(tip.id) ?? true {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Image(systemName: "lightbulb").foregroundStyle(.yellow)
-                    Text(tip.title).font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                }
-                Text(tip.body).font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.78))
-                    .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
-                HStack { Spacer(); Button("Got it") { store.dismissTip() }.buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.accentColor) }
-            }
-            .padding(14)
-            .frame(maxWidth: 360)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.2)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08)))
-            .transition(.scale(scale: 0.96).combined(with: .opacity))
-            .padding(.top, 8)
-        }
+        .buttonStyle(.plain).accessibilityLabel(help)
     }
 }

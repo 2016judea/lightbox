@@ -22,7 +22,6 @@ struct LabChip: View {
                     .chipStyle()
                 }
                 .buttonStyle(.plain)
-                .help(String(format: "Match confidence %.0f%%", m.confidence * 100))
             case .denied:
                 Text("Photos access is off, so Lightbox can't look for your lab scan")
                     .chipStyle()

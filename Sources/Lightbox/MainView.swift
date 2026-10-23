@@ -189,7 +189,6 @@ struct ReadyView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
-        .overlay(alignment: .bottom) { TipCard(ids: ["stock", "preview"]).padding(.bottom, 8) }
     }
 }
 
@@ -224,19 +223,19 @@ struct ActionBar: View {
         HStack(spacing: 12) {
             switch store.phase {
             case .ready:
-                Button { store.touched("preview"); Task { await store.preview() } } label: {
+                Button { Task { await store.preview() } } label: {
                     Label("Preview", systemImage: "eye")
                 }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
             case .previewed:
                 if store.cropping { cropButtons } else {
                     Button("Preview again") { Task { await store.preview() } }.buttonStyle(QuietButton())
-                    Button { store.touched("scan"); Task { await store.scan() } } label: {
+                    Button { Task { await store.scan() } } label: {
                         Label("Scan", systemImage: "camera.aperture")
                     }.buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [])
                 }
             case .editing:
                 if store.cropping { cropButtons } else {
-                    Button { store.touched("next"); store.nextFrame() } label: { Label("Next frame", systemImage: "arrow.right") }
+                    Button { store.nextFrame() } label: { Label("Next frame", systemImage: "arrow.right") }
                         .buttonStyle(QuietButton())
                     Button { Task { await store.export(.jpeg) } } label: { Label("Save", systemImage: "square.and.arrow.down") }
                         .buttonStyle(QuietButton())

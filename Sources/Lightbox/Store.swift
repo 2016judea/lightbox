@@ -34,7 +34,6 @@ final class Store: ObservableObject {
     @Published var frameNumber = 1
     @Published var toast: String?
     @Published var errorMessage: String?
-    @Published var activeTip: CoachTip?
     @Published var guess: FilmGuess?
     /// He picked the film type by hand on this roll, so detection stops overriding it.
     @Published var typeLocked: Bool = UserDefaults.standard.bool(forKey: "typeLocked") {
@@ -267,18 +266,6 @@ final class Store: ObservableObject {
         }
     }
 
-    func resetHelp(_ s: Setting) -> String {
-        switch s {
-        case .stock: return "Back to \(FilmStock.defaultName)"
-        case .dpi: return "Back to 3600 dpi"
-        case .exposure, .warmth, .tint where labMatched != nil: return "Back to the lab-matched value"
-        case .filmType: return "Back to the detected type"
-        case .cropRotate: return labMatched != nil || { if case .found = lab { return true }; return false }()
-            ? "Back to the auto crop, turned the way the lab scan is" : "Back to the auto crop"
-        default: return "Back to \(stock.isEmpty ? "the" : stock + "'s") starting point"
-        }
-    }
-
     func reset(_ s: Setting) {
         recordUndo()
         switch s {
@@ -412,12 +399,12 @@ final class Store: ObservableObject {
     func rotate(_ dir: Int) {
         recordUndo()
         edit.rotation = ((edit.rotation + dir) % 4 + 4) % 4
-        touched("rotate"); editChanged()
+        editChanged()
     }
 
-    func toggleMirror() { recordUndo(); edit.mirrored.toggle(); touched("rotate"); editChanged() }
+    func toggleMirror() { recordUndo(); edit.mirrored.toggle(); editChanged() }
 
-    func startCrop() { cropping = true; touched("crop"); rerender() }
+    func startCrop() { cropping = true; rerender() }
 
     func finishCrop(display: NRect?) {
         recordUndo()
@@ -472,7 +459,6 @@ final class Store: ObservableObject {
         let e0 = Edit(filmType: edit.filmType)          // raw orientation; the matcher tries all four
         let look = self.look
         lab = .searching("Looking for your lab scan…")
-        touched("lab")
         labTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard await LabIndex.authorize() else { await self?.setLab(.denied, nil); return }
             let idx = LabIndex.shared
@@ -664,20 +650,4 @@ final class Store: ObservableObject {
         if let u = lastSaved ?? fullURL { NSWorkspace.shared.activateFileViewerSelecting([u]) }
     }
 
-    // MARK: coaching
-
-    func touched(_ id: String) {
-        guard let tip = CoachTip.all[id], !UserDefaults.standard.bool(forKey: "tip." + id) else { return }
-        withAnimation(.easeOut(duration: 0.2)) { activeTip = tip }
-    }
-
-    func dismissTip() {
-        if let t = activeTip { UserDefaults.standard.set(true, forKey: "tip." + t.id) }
-        withAnimation(.easeOut(duration: 0.2)) { activeTip = nil }
-    }
-
-    func resetTips() {
-        for id in CoachTip.all.keys { UserDefaults.standard.removeObject(forKey: "tip." + id) }
-        onboarded = false
-    }
 }
