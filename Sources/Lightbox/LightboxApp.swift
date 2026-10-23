@@ -13,7 +13,10 @@ struct LightboxApp: App {
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 640)
                 .preferredColorScheme(.dark)
-                .task { await store.checkScanner(); store.warmLabIndex() }
+                .task {
+                    if let u = Entry.openOnLaunch { await store.open(u); return }
+                    await store.checkScanner(); store.warmLabIndex()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)

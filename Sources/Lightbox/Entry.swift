@@ -11,6 +11,9 @@ func PHAssetFetch(_ id: String) -> PHAsset? { PHAsset.fetchAssets(withLocalIdent
 /// the regression fixture) and writes candidates.json + lab.jpg + ours.jpg into out-dir.
 @main
 enum Entry {
+    /// `--open <raw>`: open a saved scan on launch (used for QA screenshots without touching his window).
+    nonisolated(unsafe) static var openOnLaunch: URL?
+
     static func main() {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--lab-bench"), args.count > i + 2 {
@@ -25,6 +28,7 @@ enum Entry {
             }
             RunLoop.main.run()
         } else {
+            if let i = args.firstIndex(of: "--open"), args.count > i + 1 { openOnLaunch = URL(fileURLWithPath: args[i + 1]) }
             LightboxApp.main()
         }
     }

@@ -34,14 +34,14 @@ struct EditPane: View {
                 }
 
                 Section("Crop & Rotate", tips: ["rotate", "crop"]) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         IconButton(symbol: "rotate.left", help: "Rotate left") { store.rotate(-1) }
                         IconButton(symbol: "rotate.right", help: "Rotate right") { store.rotate(1) }
                         IconButton(symbol: "arrow.left.and.right.righttriangle.left.righttriangle.right", help: "Mirror") { store.toggleMirror() }
                         Spacer()
                         ResetButton(setting: .cropRotate)
                         Button(store.cropping ? "Cropping…" : "Crop") { store.startCrop() }
-                            .buttonStyle(QuietButton()).disabled(store.cropping)
+                            .buttonStyle(QuietButton()).disabled(store.cropping).fixedSize()
                     }
                     if store.edit.crop != nil && !store.cropping {
                         Button("Back to auto crop") { store.resetCrop() }
@@ -167,9 +167,11 @@ struct AdjustSlider: View {
             HStack {
                 Label(label, systemImage: symbol).font(.system(size: 13))
                 Spacer()
-                Text(value == 0 ? "Auto" : String(format: "%+.0f", value * 100))
+                // values under half a step read as Auto, never "-0"
+                let shown = (value * 100).rounded()
+                Text(shown == 0 ? "Auto" : String(format: "%+.0f", shown))
                     .font(.system(size: 12).monospacedDigit())
-                    .foregroundStyle(value == 0 ? .secondary : .primary)
+                    .foregroundStyle(shown == 0 ? .secondary : .primary)
                 if let s = Setting(rawValue: id) { ResetButton(setting: s) }
             }
             .contentShape(Rectangle())
@@ -195,8 +197,8 @@ struct IconButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 14))
-                .frame(width: 34, height: 30)
+            Image(systemName: symbol).font(.system(size: 13))
+                .frame(width: 30, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.08)))
         }
         .buttonStyle(.plain).help(help)

@@ -22,7 +22,16 @@ enum Setting: String, CaseIterable {
         return e
     }
 
+    /// Slider settings count as changed only past half a displayed step, matching what the label shows.
     static func differs(_ s: Setting, _ e: Edit, _ b: Edit) -> Bool {
-        reset(s, e, to: b) != e
+        func off(_ x: Double, _ y: Double) -> Bool { abs(x - y) >= 0.005 }
+        switch s {
+        case .exposure: return off(e.exposure, b.exposure)
+        case .contrast: return off(e.contrast, b.contrast)
+        case .sharpen: return off(e.sharpen, b.sharpen)
+        case .warmth: return off(e.warmth, b.warmth)
+        case .tint: return off(e.tint, b.tint)
+        default: return reset(s, e, to: b) != e
+        }
     }
 }
