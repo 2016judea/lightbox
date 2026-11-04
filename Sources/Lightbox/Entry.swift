@@ -27,6 +27,10 @@ enum Entry {
                 exit(0)
             }
             RunLoop.main.run()
+        } else if let i = args.firstIndex(of: "--ux-tour"), args.count > i + 2 {
+            let photo = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
+            Task { @MainActor in await UXTour.run(photo: photo, out: out); exit(0) }
+            RunLoop.main.run()
         } else if let i = args.firstIndex(of: "--snapshot"), args.count > i + 2 {
             // QA with the screen locked: renders the bench views off-screen to PNGs
             let raw = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
