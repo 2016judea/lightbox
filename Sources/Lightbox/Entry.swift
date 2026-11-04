@@ -27,6 +27,11 @@ enum Entry {
                 exit(0)
             }
             RunLoop.main.run()
+        } else if let i = args.firstIndex(of: "--snapshot"), args.count > i + 2 {
+            // QA with the screen locked: renders the bench views off-screen to PNGs
+            let raw = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
+            Task { @MainActor in await Snapshot.run(raw: raw, out: out); exit(0) }
+            RunLoop.main.run()
         } else {
             if let i = args.firstIndex(of: "--open"), args.count > i + 1 { openOnLaunch = URL(fileURLWithPath: args[i + 1]) }
             LightboxApp.main()

@@ -22,15 +22,15 @@ enum Setting: String, CaseIterable {
         return e
     }
 
-    /// Slider settings count as changed only past half a displayed step, matching what the label shows.
+    /// Slider settings count as changed only when the readout (in printer's units) shows a change.
     static func differs(_ s: Setting, _ e: Edit, _ b: Edit) -> Bool {
-        func off(_ x: Double, _ y: Double) -> Bool { abs(x - y) >= 0.005 }
+        typealias P = PrinterUnits
         switch s {
-        case .exposure: return off(e.exposure, b.exposure)
-        case .contrast: return off(e.contrast, b.contrast)
-        case .sharpen: return off(e.sharpen, b.sharpen)
-        case .warmth: return off(e.warmth, b.warmth)
-        case .tint: return off(e.tint, b.tint)
+        case .exposure: return P.stopsText((e.exposure - b.exposure) * P.stopsPerExposure) != nil
+        case .contrast: return P.gradeText((e.contrast - b.contrast) * P.gradesPerContrast) != nil
+        case .sharpen: return abs(e.sharpen - b.sharpen) >= 0.005
+        case .warmth: return P.ccText((e.warmth - b.warmth) * P.ccYPerWarmth, "Y") != nil
+        case .tint: return P.ccText((e.tint - b.tint) * P.ccMPerTint, "M") != nil
         default: return reset(s, e, to: b) != e
         }
     }

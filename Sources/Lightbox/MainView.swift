@@ -94,9 +94,13 @@ struct LoadStepLink: View {
 
 struct CanvasView: View {
     @EnvironmentObject var store: Store
+    @State private var held = false
+
+    var onBench: Bool { store.phase == .previewed || store.phase == .editing }
 
     var body: some View {
         ZStack {
+            if onBench && store.image != nil { RoundedRectangle(cornerRadius: 10).fill(benchGrey).padding(-14) }
             switch store.phase {
             case .checking:
                 ProgressView().controlSize(.large)
@@ -114,6 +118,8 @@ struct CanvasView: View {
             case .previewed, .editing:
                 if store.showingVariations && store.phase == .previewed {
                     VariationsView()
+                } else if store.showingRing {
+                    RingView()
                 } else if store.cropping, let full = store.uncropped {
                     CropOverlay(image: full, initial: store.displayCrop)
                 } else if store.comparing, let img = store.image, let lab = store.labOriented {
@@ -125,7 +131,13 @@ struct CanvasView: View {
                     .onTapGesture(count: 2) { store.toggleZoom() }
                     .overlay(alignment: .topLeading) { Text("100%  ·  double-click to fit").chipStyle().padding(12) }
                 } else if let img = store.image {
-                    ImageView(image: img)
+                    ImageView(image: held ? (store.beforeImage ?? img) : img)
+                        .overlay(alignment: .bottom) {
+                            VStack(spacing: 8) {
+                                HoldToFlip(held: $held)
+                                FlagLine()
+                            }.padding(.bottom, 12)
+                        }
                         .overlay(alignment: .top) {
                             if store.phase == .previewed && !store.variations.isEmpty { BackToAlternatives().padding(.top, 12) }
                             else if store.phase == .editing && store.picks.count > 1 { PickSwitcher().padding(.top, 12) }
@@ -264,11 +276,12 @@ struct ActionBar: View {
                     // Esc does the same
                     Button("") { store.backToLoad() }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0)
                     Button("Preview again") { Task { await store.preview() } }.buttonStyle(QuietButton())
-                    Button { store.showingVariations.toggle() } label: {
-                        Label(store.showingVariations ? "Back to preview" : "Alternatives", systemImage: "square.grid.3x2")
+                    // Claude's interpretations: secondary, on request, never the default view
+                    Button { store.explore() } label: {
+                        Label(store.showingVariations ? "Back to preview" : "Explore", systemImage: "sparkles")
                     }
                     .buttonStyle(QuietButton())
-                    .disabled(store.variations.isEmpty)
+                    .disabled(!Store.variationsEnabled || VariationAI.apiKey == nil)
                     if !store.showingVariations || !store.picked.isEmpty {
                         Button { store.showingVariations = false; Task { await store.scan() } } label: {
                             Label(store.picked.count > 1 ? "Scan \(store.picked.count) picks"
@@ -343,7 +356,7 @@ struct BackToAlternatives: View {
         Button { store.showingVariations = true } label: {
             HStack(spacing: 6) {
                 Image(systemName: "square.grid.3x2").font(.system(size: 11, weight: .semibold))
-                Text("All alternatives").font(.system(size: 12, weight: .semibold))
+                Text("Interpretations").font(.system(size: 12, weight: .semibold))
                 if let n = store.pickedLabel {
                     Text("·  \(n)").font(.system(size: 12)).foregroundStyle(.secondary)
                 }

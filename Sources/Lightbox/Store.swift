@@ -61,7 +61,7 @@ final class Store: ObservableObject {
     private var fullClean: RawImage?     // the same with dust removed from the infrared plane
     private var workingClean: RawImage?
     @Published var hasIR = false
-    // Alternatives: the default plus five Claude proposes, shown as a grid after each full scan.
+    // Explore: five interpretations Claude proposes, on request (the Explore button), shown as a grid.
     enum VariationState: Equatable { case idle, thinking, ready, failed(String) }
     @Published var variations: [Variation] = []
     @Published var variationState: VariationState = .idle
@@ -84,13 +84,123 @@ final class Store: ObservableObject {
     private(set) var analysis: Analysis?
     private var renderTask: Task<Void, Never>?
     var isFull: Bool { phase == .editing }
-    var look: FilmStock.Look { FilmStock.named(stock)?.look ?? .standard }
+    /// The stock's profile, printed with the roll's paper/machine character.
+    var look: FilmStock.Look { notebook.character.apply(FilmStock.named(stock)?.look ?? .standard) }
+
+    // MARK: the printer's bench (docs/ALTERNATIVES.md)
+
+    /// The roll's notebook: character, the correction carried into the next frame, frames that used it.
+    @Published var notebook = RollNotebook()
+    /// What this frame started from (the carried correction), for "Reset frame" and the notebook line.
+    @Published var frameStart = Correction()
+    /// The ambiguities this frame raises; a kind he has answered on this frame drops out.
+    @Published var ambiguities: [Ambiguity] = []
+    @Published var settled: Set<Ambiguity.Kind> = []
+    var openAmbiguities: [Ambiguity] { ambiguities.filter { !settled.contains($0.kind) } }
+    @Published var showingRing = false
+    @Published var ringCentre: CGImage?
+    @Published var ringImages: [UUID: CGImage] = [:]
+    /// The frame's rendering before he took an alternative, for hold-to-flip.
+    @Published var beforeImage: CGImage?
+    private var beforeEdit: Edit?
+    private var benchTask: Task<Void, Never>?
+
+    /// Off in tests that don't need it (it runs Vision).
+    nonisolated(unsafe) static var benchEnabled = true
+
+    /// Measures the frame and decides which questions it raises. After a preview, a load, a stock or
+    /// character change, and a lab match.
+    func detectAmbiguities(then: (() -> Void)? = nil) {
+        guard Store.benchEnabled, let w = displayRaw, let a = analysis else { ambiguities = []; return }
+        let e = edit, look = self.look, stock = self.stock
+        var conf: Double? = nil
+        if case .found(let m) = lab { conf = m.confidence }
+        benchTask?.cancel()
+        benchTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let r = Bench.analyse(w, a, edit: e, look: look, stock: stock, labConfidence: conf)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                self?.ambiguities = r?.1 ?? []
+                then?()
+            }
+        }
+    }
+
+    /// The ring-around: the frame as it prints now at the centre, each open alternative around it.
+    func openRing() {
+        detectAmbiguities { [weak self] in self?.renderRing() }
+        showingRing = true
+    }
+
+    private func renderRing() {
+        guard let w = displayRaw, let a = analysis else { return }
+        let small = w.width > 700 ? w.downsampled(maxSide: 700) : w
+        let tiles = openAmbiguities.flatMap(\.tiles)
+        let e = edit, look = self.look
+        ringImages = [:]; ringCentre = nil
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let c = Develop.render(small, a, e, look: look)
+            await MainActor.run { self?.ringCentre = c }
+            for t in tiles {
+                let img = Develop.render(small, a, t.edit, look: look)
+                await MainActor.run { self?.ringImages[t.id] = img }
+            }
+        }
+    }
+
+    /// Takes an alternative: the frame now prints that way and that question is answered.
+    func accept(_ t: RingTile, from kind: Ambiguity.Kind) {
+        recordUndo()
+        if beforeEdit == nil { beforeEdit = edit; beforeImage = image }
+        edit = t.edit
+        settled.insert(kind)
+        showingRing = false
+        editChanged()
+    }
+
+    /// Every frame's correction goes into the notebook when he moves on; the next frame starts from it.
+    private func keepInNotebook() {
+        guard working != nil else { return }
+        notebook.keep(frame: frameNumber, Correction(edit))
+        if let u = fullURL { notebook.save(to: u.deletingLastPathComponent()) }
+    }
+
+    func setCharacter(_ c: PrintCharacter) {
+        guard c != notebook.character else { return }
+        notebook.character = c
+        if let u = fullURL { notebook.save(to: u.deletingLastPathComponent()) }
+        rerender(); detectAmbiguities()
+        if loupe != nil { updateLoupe() }
+    }
+
+    /// This frame back to no correction at all (the stock profile as fitted).
+    func resetFrame() {
+        recordUndo()
+        edit = Correction().applied(to: edit)
+        settled = []; beforeEdit = nil; beforeImage = nil
+        editChanged()
+    }
+
+    /// The roll forgets its correction: nothing carries, this frame back to none. Character stays.
+    func resetRoll() {
+        let c = notebook.character
+        notebook = RollNotebook(); notebook.character = c
+        frameStart = Correction()
+        if let u = fullURL { notebook.save(to: u.deletingLastPathComponent()) }
+        resetFrame()
+    }
+
+    private func resetBench() {
+        benchTask?.cancel(); ambiguities = []; settled = []; showingRing = false
+        ringImages = [:]; ringCentre = nil; beforeEdit = nil; beforeImage = nil
+    }
 
     /// Picking a stock also says what kind of film it is.
     func chooseStock(_ name: String) {
         stock = name
         if let s = FilmStock.named(name) { typeLocked = false; guess = guess ?? nil; setFilmType(s.type) }
         rerender(); if phase == .editing { saveSidecar() }
+        detectAmbiguities()
     }
 
     init() {
@@ -148,7 +258,7 @@ final class Store: ObservableObject {
             phase = .previewed
             rerender()
             findLabScan()
-            generateVariations()
+            resetBench(); detectAmbiguities()
         } catch is CancellationError {
             phase = image == nil ? .ready : .previewed
         } catch {
@@ -206,6 +316,7 @@ final class Store: ObservableObject {
         hasIR = FileManager.default.fileExists(atPath: irURL.path)
         phase = .editing
         rerender()
+        detectAmbiguities()
         if hasIR { cleanDust(irURL) }
         showingVariations = false     // alternatives are a Preview step; the scan is the pick, final
     }
@@ -256,6 +367,11 @@ final class Store: ObservableObject {
                 self?.variationState = have ? .ready : .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// Explore: Claude's interpretations, on request only. They are no longer the default view.
+    func explore() {
+        if variations.isEmpty { generateVariations() } else { showingVariations.toggle() }
     }
 
     /// Back to the set before; pressing again cycles through every set made for this frame.
@@ -344,6 +460,8 @@ final class Store: ObservableObject {
             if let d = try? Data(contentsOf: side), let s = try? JSONDecoder().decode(Sidecar.self, from: d) {
                 edit = s.edit; stock = s.stock
             }
+            if let nb = RollNotebook.load(from: url.deletingLastPathComponent()) { notebook = nb }
+            if let n = Int(url.lastPathComponent.dropFirst(6).prefix(2)), url.lastPathComponent.hasPrefix("frame-") { frameNumber = n }
             try await load(url, keepEdit: true)
             if let w = working { guess = FilmDetect.guess(w) }
             findLabScan()
@@ -357,20 +475,27 @@ final class Store: ObservableObject {
     /// so nothing is lost and this is the next frame.
     func backToLoad() {
         if showingVariations { showingVariations = false; return }   // Esc closes the grid first
+        if showingRing { showingRing = false; return }               // and the ring-around
         variationTask?.cancel(); variations = []; previousSets = []; variationState = .idle; picked = []; picks = []; activePick = 0
         guard !cropping else { cropping = false; return }
         if phase == .editing { nextFrame(); return }
         guard phase == .previewed else { return }
         labTask?.cancel(); lab = .idle; labImage = nil; comparing = false
         image = nil; uncropped = nil; working = nil; analysis = nil; loupe = nil; zoomed = nil; focus = nil
+        resetBench()
         phase = .ready
     }
 
     func nextFrame() {
+        keepInNotebook()
+        resetBench()
         variationTask?.cancel(); variations = []; previousSets = []; variationState = .idle; showingVariations = false; picked = []; picks = []; activePick = 0
         frameNumber += 1
         let keep = edit
         edit = Edit(); edit.filmType = keep.filmType; edit.rotation = keep.rotation; edit.mirrored = keep.mirrored
+        // the printer's notebook: this frame starts from the correction the last one was kept with
+        frameStart = notebook.carried
+        edit = notebook.carried.applied(to: edit)
         image = nil; uncropped = nil; working = nil; analysis = nil; fullURL = nil; lastExport = nil
         full = nil; fullClean = nil; workingClean = nil; hasIR = false; dustFraction = nil
         loupe = nil; zoomed = nil; focus = nil
@@ -382,7 +507,9 @@ final class Store: ObservableObject {
     /// A new roll: frame 1, no stock, detection back on.
     func newRoll() {
         stock = ""; typeLocked = false; frameNumber = 0
+        resetBench(); working = nil
         nextFrame()
+        notebook = RollNotebook(); frameStart = Correction(); edit = Correction().applied(to: edit)
     }
 
     // MARK: resets and undo
@@ -641,6 +768,7 @@ final class Store: ObservableObject {
         if case .found(let m) = s {
             // the lab scan knows which way is up: turn ours to match if he hasn't turned it himself
             if edit.rotation == 0 && m.rotation != 0 { edit.rotation = m.rotation; rerender() }
+            detectAmbiguities()
             if phase == .editing { saveSidecar() }
         }
     }

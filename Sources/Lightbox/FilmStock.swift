@@ -13,6 +13,8 @@ struct FilmStock: Identifiable, Hashable {
     let note: String?
     let type: FilmType
     var look: Look = .standard
+    /// Expired (or long-discontinued) film: its colour layers drift apart, so balance-by-tone is offered.
+    var expired = false
     var id: String { name }
 
     /// How the inversion treats this stock.
@@ -63,7 +65,7 @@ struct FilmStock: Identifiable, Hashable {
         // saturation goes up 25% (about +10% after the print curve) for his "little more pop".
         .init(name: "Kodak Portra 160VC", note: "discontinued (expired) film, think Portra elegance with a little more pop",
               type: .colorNegative, look: .init(neutral: 0.85, saturation: 1.25, blackPoint: 0.06,
-                                                explain: "Portra 160VC: correcting for expired-film fog, with a little extra colour.")),
+                                                explain: "Portra 160VC: correcting for expired-film fog, with a little extra colour."), expired: true),
         // Shot through the base, so the red/amber IS the picture: no median balancing, and all three
         // channels share one density range so the red-heavy density survives the inversion.
         .init(name: "Redscale", note: "reds, yellows and amber… can be great in bright light", type: .colorNegative,

@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Six takes on the frame after a scan. The default (no changes) sits top right; Claude's five fill the
+/// Explore: Claude's interpretations of the frame, on request. Interpretations, not corrections: the
+/// printer's corrections live on the bench (RingView). Six takes on the frame. The default (no changes) sits top right; Claude's five fill the
 /// other places in order: two along the top, three along the bottom. Tick one or more; one scan makes them all.
 struct VariationsView: View {
     @EnvironmentObject var store: Store
@@ -35,7 +36,7 @@ struct VariationsView: View {
                 Text(m).foregroundStyle(.secondary).lineLimit(2)
                 Button("Try again") { store.generateVariations() }.buttonStyle(.link)
             default:
-                Text("Pick one or more. Scan makes them all.").foregroundStyle(.secondary)
+                Text("Claude's interpretations, not corrections. Pick one or more; Scan makes them all.").foregroundStyle(.secondary)
                 Button("Five more") { store.generateVariations() }.buttonStyle(.link)
                 if !store.previousSets.isEmpty {
                     Button("Previous set") { store.showPreviousSet() }.buttonStyle(.link)

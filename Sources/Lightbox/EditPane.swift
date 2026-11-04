@@ -16,9 +16,13 @@ struct EditPane: View {
                     }
                 }
 
+                Section("Roll notebook") { NotebookPanel() }
+
                 Section("Light") {
-                    AdjustSlider(id: "exposure", label: "Exposure", symbol: "sun.max", value: $store.edit.exposure)
-                    AdjustSlider(id: "contrast", label: "Contrast", symbol: "circle.righthalf.filled", value: $store.edit.contrast)
+                    AdjustSlider(id: "exposure", label: "Exposure", symbol: "sun.max", value: $store.edit.exposure,
+                                 readout: { PrinterUnits.stopsText($0 * PrinterUnits.stopsPerExposure) })
+                    AdjustSlider(id: "contrast", label: "Contrast", symbol: "circle.righthalf.filled", value: $store.edit.contrast,
+                                 readout: { PrinterUnits.gradeText($0 * PrinterUnits.gradesPerContrast) })
                     AdjustSlider(id: "sharpen", label: "Sharpness", symbol: "triangle", value: $store.edit.sharpen,
                                  onEditing: { on in if on { store.updateLoupe() } },
                                  onHover: { on in if on { store.updateLoupe() } else { store.hideLoupe() } })
@@ -26,8 +30,10 @@ struct EditPane: View {
 
                 Section("Colour") {
                     AdjustSlider(id: "warmth", label: "Warmth", symbol: "thermometer.medium", value: $store.edit.warmth,
+                                 readout: { PrinterUnits.ccText($0 * PrinterUnits.ccYPerWarmth, "Y") },
                                  track: [Color(red: 0.35, green: 0.55, blue: 1), Color(white: 0.5), Color(red: 1, green: 0.72, blue: 0.3)])
                     AdjustSlider(id: "tint", label: "Tint", symbol: "drop", value: $store.edit.tint,
+                                 readout: { PrinterUnits.ccText($0 * PrinterUnits.ccMPerTint, "M") },
                                  track: [Color(red: 0.3, green: 0.85, blue: 0.4), Color(white: 0.5), Color(red: 0.95, green: 0.35, blue: 0.85)])
                 }
 
@@ -152,6 +158,8 @@ struct AdjustSlider: View {
     let label: String
     let symbol: String
     @Binding var value: Double
+    /// The value in printer's units ("+⅓ stop", "+10 Y"); nil reads Auto. Without one, a plain number.
+    var readout: ((Double) -> String?)? = nil
     var track: [Color]? = nil
     var onEditing: ((Bool) -> Void)? = nil
     var onHover: ((Bool) -> Void)? = nil
@@ -163,9 +171,10 @@ struct AdjustSlider: View {
                 Spacer()
                 // values under half a step read as Auto, never "-0"
                 let shown = (value * 100).rounded()
-                Text(shown == 0 ? "Auto" : String(format: "%+.0f", shown))
+                let text: String? = readout.map { $0(value) } ?? (shown == 0 ? nil : String(format: "%+.0f", shown))
+                Text(text ?? "Auto")
                     .font(.system(size: 12).monospacedDigit())
-                    .foregroundStyle(shown == 0 ? .secondary : .primary)
+                    .foregroundStyle(text == nil ? .secondary : .primary)
                 if let s = Setting(rawValue: id) { ResetButton(setting: s) }
             }
             .contentShape(Rectangle())

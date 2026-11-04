@@ -16,6 +16,19 @@ opens every scan already adjusted. A first-run walkthrough shows how to load and
 - **Keep**: JPEG or 16-bit TIFF in `~/Pictures/Lightbox/<date> <stock>/`, the untouched 16-bit raw beside it, and an "Add to Photos" button for the Film album.
 - **Lab scan**: after a preview or scan, it looks through your Photos for the lab's scan of the same frame. You can compare the two with a split view, or borrow the lab's colour.
 
+## The printer's bench
+
+Each frame opens on one rendering, on a mid-grey surround. Alternatives appear only when the frame is
+genuinely ambiguous (spec: `docs/ALTERNATIVES.md`): a quiet line names the question and **Compare**
+(or `R`) opens a ring-around, the default at the centre and a printer's moves around it, labelled in
+printer's units (`+⅓ stop`, `+10 Y`, `balance on skin · +15 Y`). Click one to take it; press and hold
+to flip. The roll notebook (edit pane) holds the roll's paper character (soft / normal / hard) and
+carries each frame's correction into the next frame. Units describe the print: `+10 Y` = 10 CC
+yellower. Ring step sizes are the darkroom defaults (±⅓, ±⅔ stop; CC 5, 10) until a calibration fit
+fills `StockStepSizes.provider`. Claude's takes moved to **Explore** on the Preview bar.
+
+`Lightbox --snapshot <raw> <out-dir>` renders the default view, ring and notebook to PNGs off-screen.
+
 ## Setup on a new Mac
 
 1. `scripts/build_sane.sh` builds the scanner driver into `~/Library/Lightbox/sane`. The driver is
